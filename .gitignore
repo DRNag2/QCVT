@@ -1,0 +1,36 @@
+# Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Build / install
+build/
+dist/
+*.egg-info/
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local outputs (examples may write here)
+*.png
+!examples/*.png
+qick_config.json
+
+# OS
+.DS_Store
+Thumbs.db
