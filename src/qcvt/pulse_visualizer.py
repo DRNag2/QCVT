@@ -1367,3 +1367,249 @@ def export_edge_matrices_csv(
         w.writerows(amp_rows)
 
     return state_path, amp_path
+
+
+def csv_to_table_png(csv_path: str, png_path: str, title: str = "") -> None:
+    """
+    Render a CSV (e.g. edge matrix) as a PNG table with optional highlighting.
+
+    Rows/columns are taken from the CSV. Cells with "on" or numeric value > 0
+    are highlighted light blue.
+    """
+    import pandas as pd
+
+    df = pd.read_csv(csv_path)
+
+    def _display_col(col: str) -> str:
+        if col == df.columns[0]:
+            return col
+        s = str(col).strip()
+        suffix = ""
+        if "(" in s and s.endswith(")"):
+            base, suf = s.rsplit("(", 1)
+            base = base.strip()
+            suf = "(" + suf
+            try:
+                float(base)
+                s = base
+                suffix = suf
+            except Exception:
+                pass
+        return s + suffix
+
+    display_cols = [_display_col(c) for c in df.columns]
+    fig_h = max(2.5, 0.55 * (len(df) + 1))
+    fig_w = max(8.0, 0.8 * len(df.columns))
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    ax.axis("off")
+    tbl = ax.table(
+        cellText=df.values,
+        colLabels=display_cols,
+        loc="center",
+        cellLoc="center",
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(9)
+    tbl.scale(1.0, 1.35)
+    try:
+        first_w = tbl[(0, 0)].get_width()
+        for (r, c), cell in tbl.get_celld().items():
+            if c == 0:
+                cell.set_width(first_w * 1.8)
+    except Exception:
+        pass
+    highlight = "#d9ecff"
+    for (r, c), cell in tbl.get_celld().items():
+        if r == 0 or c == -1:
+            continue
+        try:
+            val = df.iat[r - 1, c]
+        except Exception:
+            continue
+        if isinstance(val, str):
+            v = val.strip().lower()
+            if v == "on":
+                cell.set_facecolor(highlight)
+            else:
+                try:
+                    if float(v) > 0:
+                        cell.set_facecolor(highlight)
+                except Exception:
+                    pass
+        else:
+            try:
+                if float(val) > 0:
+                    cell.set_facecolor(highlight)
+            except Exception:
+                pass
+    if title:
+        ax.set_title(title, pad=6)
+    fig.tight_layout()
+    fig.savefig(png_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+def visualize_all(
+    prog,
+    out_dir: str,
+    title: str = "Pulse schedule",
+    show_amplitude: bool = True,
+    amplitude_units: str = "dac",
+    t0_us: float = 0.0,
+    t1_us: Optional[float] = None,
+    rows: Optional[List[Tuple[str, str, int]]] = None,
+    gen_ch_labels: Optional[dict] = None,
+    physical_port_labels: Optional[dict] = None,
+    schedule_dpi: int = 150,
+    table_dpi: int = 200,
+) -> dict:
+    """
+    Generate all pulse visualization outputs in one call.
+
+    This is a convenience function that produces:
+      - schedule.png: pulse schedule plot (optionally with amplitude panel)
+      - amplitudes.csv / amplitudes.npz: raw amplitude traces
+      - edges_state.csv / edges_amp.csv: edge matrices
+      - edges_state.png / edges_amp.png: rendered table images
+
+    Parameters
+    ----------
+    prog : QickProgramV2
+        Compiled QICK asm_v2 program.
+    out_dir : str
+        Output directory. Created if it doesn't exist.
+    title : str
+        Title for the schedule plot.
+    show_amplitude : bool
+        If True, include amplitude vs time panel in schedule plot.
+    amplitude_units : str
+        "dac" for DAC units (0 to maxv), "norm" for normalized 0-1.
+    t0_us : float
+        Start time for amplitude/edge exports (microseconds).
+    t1_us : float, optional
+        End time for exports. If None, inferred from schedule.
+    rows : list of (label, kind, ch), optional
+        Row specification for edge matrices. If None, auto-generated from
+        all gen/adc channels in the schedule.
+    gen_ch_labels : dict, optional
+        Map gen_ch (int) -> label str for y-axis labels.
+    physical_port_labels : dict, optional
+        Map RFDC IDs -> human labels for port annotations.
+    schedule_dpi : int
+        DPI for schedule PNG (default 150).
+    table_dpi : int
+        DPI for table PNGs (default 200).
+
+    Returns
+    -------
+    dict
+        Dictionary with paths to all generated files:
+        {
+            "schedule_png": str,
+            "amplitudes_csv": str,
+            "amplitudes_npz": str,
+            "edges_state_csv": str,
+            "edges_amp_csv": str,
+            "edges_state_png": str,
+            "edges_amp_png": str,
+        }
+
+    Example
+    -------
+    >>> from qcvt import visualize_all, load_soccfg_from_json
+    >>> soccfg = load_soccfg_from_json("qick_config.json")
+    >>> prog = MyProgram(soccfg, reps=1, cfg=config)
+    >>> outputs = visualize_all(prog, "output/", title="Qubit spectroscopy")
+    >>> print(outputs["schedule_png"])
+    output/schedule.png
+    """
+    import os
+
+    os.makedirs(out_dir, exist_ok=True)
+
+    results = {}
+
+    # 1. Schedule plot
+    schedule_path = os.path.join(out_dir, "schedule.png")
+    plot_pulse_schedule(
+        prog,
+        ax=None,
+        gen_ch_labels=gen_ch_labels,
+        physical_port_labels=physical_port_labels,
+        show_readout_triggers=True,
+        show_amplitude=show_amplitude,
+        amplitude_units=amplitude_units,
+        title=title,
+    )
+    plt.tight_layout()
+    plt.savefig(schedule_path, dpi=schedule_dpi, bbox_inches="tight")
+    plt.close("all")
+    results["schedule_png"] = schedule_path
+
+    # 2. Amplitude traces CSV/NPZ
+    amplitudes_csv_path = os.path.join(out_dir, "amplitudes.csv")
+    try:
+        npz_path = export_amplitude_traces_csv(
+            prog,
+            csv_path=amplitudes_csv_path,
+            t0_us=t0_us,
+            t1_us=t1_us if t1_us is not None else _infer_schedule_end_us(prog, t0_us),
+            amplitude_units=amplitude_units,
+        )
+        results["amplitudes_csv"] = amplitudes_csv_path
+        results["amplitudes_npz"] = npz_path
+    except RuntimeError:
+        results["amplitudes_csv"] = None
+        results["amplitudes_npz"] = None
+
+    # 3. Edge matrices CSV
+    edges_prefix = os.path.join(out_dir, "edges")
+    try:
+        state_csv, amp_csv = export_edge_matrices_csv(
+            prog,
+            out_prefix=edges_prefix,
+            t0_us=t0_us,
+            t1_us=t1_us,
+            rows=rows,
+            amplitude_units=amplitude_units,
+        )
+        results["edges_state_csv"] = state_csv
+        results["edges_amp_csv"] = amp_csv
+
+        # 4. Edge matrices as PNG tables
+        state_png = edges_prefix + "_state.png"
+        amp_png = edges_prefix + "_amp.png"
+        csv_to_table_png(state_csv, state_png, "State Edge Summary")
+        csv_to_table_png(amp_csv, amp_png, "Amplitude Edge Summary")
+        results["edges_state_png"] = state_png
+        results["edges_amp_png"] = amp_png
+    except RuntimeError:
+        results["edges_state_csv"] = None
+        results["edges_amp_csv"] = None
+        results["edges_state_png"] = None
+        results["edges_amp_png"] = None
+
+    return results
+
+
+def _infer_schedule_end_us(prog, t0_us: float) -> float:
+    """Infer the end time (in us) from the schedule for amplitude export."""
+    schedule = _extract_schedule(prog)
+    if not schedule:
+        return t0_us + 1.0
+
+    soccfg = getattr(prog, "soccfg", None)
+
+    def to_us(t_cy: float, length_cy: float, ch: int, kind: str):
+        if soccfg is None or not hasattr(soccfg, "cycles2us"):
+            return float(t_cy) / 1000.0, float(length_cy) / 1000.0
+        if kind == "gen":
+            return soccfg.cycles2us(t_cy, gen_ch=ch), soccfg.cycles2us(length_cy, gen_ch=ch)
+        return soccfg.cycles2us(t_cy, ro_ch=ch), soccfg.cycles2us(length_cy, ro_ch=ch)
+
+    ends = []
+    for ch, _name, t_cy, length_cy, kind in schedule:
+        t_us, length_us = to_us(t_cy, length_cy, int(ch), kind)
+        ends.append(float(t_us + length_us))
+
+    return max(ends, default=t0_us + 1.0)

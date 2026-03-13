@@ -6,6 +6,8 @@ from .pulse_visualizer import (
     save_soccfg_to_json,
     load_soccfg_from_json,
     visualize_from_pickle,
+    visualize_all,
+    csv_to_table_png,
 )
 
 __all__ = [
@@ -15,6 +17,8 @@ __all__ = [
     "save_soccfg_to_json",
     "load_soccfg_from_json",
     "visualize_from_pickle",
+    "visualize_all",
+    "csv_to_table_png",
 ]
 
 __version__ = "0.1.0"
