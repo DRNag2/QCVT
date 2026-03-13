@@ -8,6 +8,7 @@ from .pulse_visualizer import (
     visualize_from_pickle,
     visualize_all,
     csv_to_table_png,
+    show_schedule,
 )
 
 __all__ = [
@@ -19,6 +20,7 @@ __all__ = [
     "visualize_from_pickle",
     "visualize_all",
     "csv_to_table_png",
+    "show_schedule",
 ]
 
 __version__ = "0.1.0"
