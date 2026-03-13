@@ -1449,6 +1449,54 @@ def csv_to_table_png(csv_path: str, png_path: str, title: str = "") -> None:
     plt.close(fig)
 
 
+def show_schedule(
+    prog,
+    title: str = "Pulse schedule",
+    show_amplitude: bool = True,
+    amplitude_units: str = "dac",
+    gen_ch_labels: Optional[dict] = None,
+    physical_port_labels: Optional[dict] = None,
+) -> None:
+    """
+    Quick interactive display of a pulse schedule (no file output).
+
+    Use this for live visualization while connected to the RFSoC.
+
+    Parameters
+    ----------
+    prog : QickProgramV2
+        Compiled QICK asm_v2 program.
+    title : str
+        Plot title.
+    show_amplitude : bool
+        If True, include amplitude vs time panel.
+    amplitude_units : str
+        "dac" for DAC units, "norm" for normalized 0-1.
+    gen_ch_labels : dict, optional
+        Map gen_ch (int) -> label str for y-axis labels.
+    physical_port_labels : dict, optional
+        Map RFDC IDs -> human labels for port annotations.
+
+    Example
+    -------
+    >>> from qcvt import show_schedule
+    >>> prog = MyProgram(soccfg, reps=1, cfg=config)
+    >>> show_schedule(prog, title="My experiment")
+    """
+    plot_pulse_schedule(
+        prog,
+        ax=None,
+        gen_ch_labels=gen_ch_labels,
+        physical_port_labels=physical_port_labels,
+        show_readout_triggers=True,
+        show_amplitude=show_amplitude,
+        amplitude_units=amplitude_units,
+        title=title,
+    )
+    plt.tight_layout()
+    plt.show()
+
+
 def visualize_all(
     prog,
     out_dir: str,
@@ -1462,6 +1510,7 @@ def visualize_all(
     physical_port_labels: Optional[dict] = None,
     schedule_dpi: int = 150,
     table_dpi: int = 200,
+    show: bool = False,
 ) -> dict:
     """
     Generate all pulse visualization outputs in one call.
@@ -1499,6 +1548,8 @@ def visualize_all(
         DPI for schedule PNG (default 150).
     table_dpi : int
         DPI for table PNGs (default 200).
+    show : bool
+        If True, display the schedule plot interactively after saving.
 
     Returns
     -------
@@ -1543,6 +1594,8 @@ def visualize_all(
     )
     plt.tight_layout()
     plt.savefig(schedule_path, dpi=schedule_dpi, bbox_inches="tight")
+    if show:
+        plt.show()
     plt.close("all")
     results["schedule_png"] = schedule_path
 
