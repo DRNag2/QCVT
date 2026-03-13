@@ -29,7 +29,7 @@ prog = YourProgram(soccfg, reps=1, cfg=config)
 show_schedule(prog, title="My experiment")  # displays interactively, returns None
 ```
 
-Or with `run_and_save_rfsoc_prog` in kerrcat.py:
+Or with `run_and_save_rfsoc_prog`:
 
 ```python
 iq_list, prog = run_and_save_rfsoc_prog(Qubit_spectroscopy, config, visualize=True)
