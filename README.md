@@ -1,4 +1,4 @@
-# QCVT — QICK pulse schedule visualizer
+# QCVT — Quantum Control Visualization Tool
 
 Visualization and edge-matrix export for [QICK](https://github.com/openquantumhardware/qick) `asm_v2` pulse programs. Works both online (connected to RFSoC) and offline.
 
