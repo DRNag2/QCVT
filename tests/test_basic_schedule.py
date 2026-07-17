@@ -1,32 +1,81 @@
-"""
-Basic tests for QCVT schedule extraction and export.
+"""Tests for QCVT schedule extraction, plotting and exports.
 
 Run with: pytest tests/ -v
 """
 from __future__ import annotations
 
-import sys
 import os
+import sys
 
-# Repo root
+import matplotlib
+
+matplotlib.use("Agg")
+
+# Make the in-tree package importable without an editable install.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import pytest
 
+CONFIG = os.path.join(os.path.dirname(__file__), "..", "examples", "qick_config.json")
+try:
+    import qick  # noqa: F401
+    HAVE_QICK = True
+except Exception:
+    HAVE_QICK = False
 
-def test_import():
-    """Package and main functions are importable."""
+needs_qick = pytest.mark.skipif(
+    not (HAVE_QICK and os.path.isfile(CONFIG)),
+    reason="requires qick and examples/qick_config.json",
+)
+
+
+def test_public_api():
     import qcvt
-    assert hasattr(qcvt, "plot_pulse_schedule")
-    assert hasattr(qcvt, "export_edge_matrices_csv")
-    assert hasattr(qcvt, "export_amplitude_traces_csv")
-    assert hasattr(qcvt, "visualize_from_pickle")
-    assert hasattr(qcvt, "save_soccfg_to_json")
-    assert hasattr(qcvt, "load_soccfg_from_json")
+
+    for name in [
+        "plot_pulse_schedule", "show_schedule", "visualize_all",
+        "visualize_from_pickle", "extract_schedule", "Schedule", "PulseEvent",
+        "export_edge_matrices_csv", "export_amplitude_traces_csv",
+        "csv_to_table_png", "save_soccfg_to_json", "load_soccfg_from_json",
+    ]:
+        assert hasattr(qcvt, name), name
 
 
 def test_extract_schedule_empty():
-    """_extract_schedule returns empty list for object without macro_list."""
+    from qcvt import extract_schedule
+
+    class Empty:
+        macro_list = []
+        pulses = {}
+        soccfg = None
+
+    sched = extract_schedule(Empty())
+    assert len(sched) == 0
+    assert not sched
+
+
+def test_param_helpers():
+    from qcvt.model import param_nominal, param_range
+
+    assert param_nominal(3.0) == 3.0
+    assert param_range(5)[:2] == (5.0, 5.0)
+    assert param_range(5)[2] is False
+
+    class FakeSweep:
+        start = 1.0
+        spans = {"loop": 4.0}
+
+        def minval(self):
+            return 1.0
+
+        def maxval(self):
+            return 5.0
+
+    lo, hi, swept = param_range(FakeSweep())
+    assert (lo, hi, swept) == (1.0, 5.0, True)
+
+
+def test_legacy_extract_tuple_shim():
     from qcvt.pulse_visualizer import _extract_schedule
 
     class Empty:
@@ -37,22 +86,99 @@ def test_extract_schedule_empty():
     assert _extract_schedule(Empty()) == []
 
 
-def test_scalar_value():
-    """_scalar_value resolves numbers and param-like objects."""
-    from qcvt.pulse_visualizer import _scalar_value
-
-    assert _scalar_value(3.0) == 3.0
-    assert _scalar_value(10) == 10.0
-
-
-@pytest.mark.skipif(
-    not os.path.isfile(os.path.join(os.path.dirname(__file__), "..", "examples", "qick_config.json")),
-    reason="qick_config.json not in examples/",
-)
-def test_load_soccfg():
-    """Load soccfg from examples if present."""
+# --------------------------------------------------------------------------- #
+# Golden tests against a real (offline-built) program
+# --------------------------------------------------------------------------- #
+def _build_spec_program():
+    from qick.asm_v2 import AveragerProgramV2, QickSweep1D
     from qcvt import load_soccfg_from_json
 
-    path = os.path.join(os.path.dirname(__file__), "..", "examples", "qick_config.json")
-    soccfg = load_soccfg_from_json(path)
-    assert soccfg is not None
+    soccfg = load_soccfg_from_json(CONFIG)
+
+    class Spec(AveragerProgramV2):
+        def _initialize(self, cfg):
+            self.declare_gen(ch=2, nqz=2)
+            self.declare_gen(ch=6, nqz=2)
+            self.add_loop("freqloop", 11)
+            self.declare_readout(ch=0, length=10.0)
+            self.add_readoutconfig(ch=0, name="ro", freq=1000, gen_ch=6)
+            self.add_pulse(ch=2, name="qpulse", ro_ch=0, style="const",
+                           length=5.0, freq=QickSweep1D("freqloop", 3000, 3200),
+                           phase=0, gain=0.3)
+            self.add_pulse(ch=6, name="readout", ro_ch=0, style="const",
+                           length=10.0, freq=1000, phase=0, gain=0.5)
+
+        def _body(self, cfg):
+            self.send_readoutconfig(ch=0, name="ro", t=0)
+            self.pulse(ch=2, name="qpulse", t=0)
+            self.delay_auto(0.01)
+            self.pulse(ch=6, name="readout", t=0)
+            self.trigger(ros=[0], pins=[0], t=0.5)
+
+    return Spec(soccfg, reps=2, final_delay=100, cfg={}, reps_innermost=False)
+
+
+@needs_qick
+def test_timing_and_sweeps():
+    from qcvt import extract_schedule
+
+    sched = extract_schedule(_build_spec_program())
+    by_name = {e.name: e for e in sched.gen_events}
+
+    q = by_name["qpulse"]
+    assert q.length == pytest.approx(5.0, abs=1e-2)
+    assert q.t_start == pytest.approx(1.0, abs=1e-2)  # includes initial sync delay
+    assert "freq" in q.swept_params
+
+    r = by_name["readout"]
+    # readout follows qpulse + delay_auto(0.01): ~1.0 + 5.0 + 0.01
+    assert r.t_start == pytest.approx(6.01, abs=5e-2)
+    assert r.length == pytest.approx(10.0, abs=1e-2)
+
+    adc = sched.adc_events[0]
+    assert adc.t_start == pytest.approx(6.51, abs=5e-2)
+    # ADC window uses the readout integration length, not the tiny trigger width.
+    assert adc.length == pytest.approx(10.0, abs=1e-1)
+
+
+@needs_qick
+def test_plot_with_ax_and_amplitude_no_crash():
+    import matplotlib.pyplot as plt
+    from qcvt import plot_pulse_schedule
+
+    prog = _build_spec_program()
+    fig, ax = plt.subplots()
+    result = plot_pulse_schedule(prog, ax=ax, show_amplitude=True)
+    assert isinstance(result, tuple) and len(result) == 2
+    plt.close("all")
+
+
+@needs_qick
+def test_visualize_all_writes_all_outputs(tmp_path):
+    from qcvt import visualize_all
+
+    prog = _build_spec_program()
+    out = visualize_all(prog, str(tmp_path), title="spec", show_amplitude=True)
+    for key in ("schedule_png", "amplitudes_csv", "amplitudes_npz",
+                "edges_state_csv", "edges_amp_csv", "edges_state_png", "edges_amp_png"):
+        assert out[key] and os.path.isfile(out[key]), key
+
+
+@needs_qick
+def test_edge_matrix_amplitude_values(tmp_path):
+    import csv
+
+    from qcvt import export_edge_matrices_csv
+
+    prog = _build_spec_program()
+    state_csv, amp_csv = export_edge_matrices_csv(
+        prog, out_prefix=str(tmp_path / "edges"), t0_us=0.0, t1_us=None,
+    )
+    with open(amp_csv) as f:
+        rows = list(csv.reader(f))
+    labels = [r[0] for r in rows[1:]]
+    assert any("gen 2" in lbl for lbl in labels)
+    # readout const gain 0.5 -> 0.5 * maxv should appear somewhere in its row.
+    readout_row = next(r for r in rows[1:] if r[0].startswith("gen 6"))
+    vals = [float(x) for x in readout_row[1:] if x not in ("", "0")]
+    assert vals and max(vals) == pytest.approx(0.5 * 32766, rel=0.02)

@@ -29,7 +29,9 @@ htmlcov/
 # Local outputs (examples may write here)
 *.png
 !examples/*.png
+examples/output/
 qick_config.json
+!examples/qick_config.json
 
 # OS
 .DS_Store

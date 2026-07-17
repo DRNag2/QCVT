@@ -1,99 +1,87 @@
-"""
-Example: build a minimal QICK program from a saved soccfg and visualize it.
+"""Build a small QICK program from a saved ``soccfg`` and visualize it offline.
 
-Prerequisites:
-  1. Once, when connected to the RFSoC, run:
-       from qcvt import save_soccfg_to_json
-       save_soccfg_to_json(soc, 'qick_config.json')
-  2. Copy qick_config.json into this directory (or set CONFIG_PATH below).
+No RFSoC connection is required: the repository ships an example
+``examples/qick_config.json`` captured from a real board.  To regenerate it for
+your own hardware, run once while connected::
 
-Then run from the repo root:
-  python examples/run_offline_example.py
+    from qcvt import save_soccfg_to_json
+    save_soccfg_to_json(soc, "qick_config.json")
 
-Or with a compiled program pickle only (no qick needed for plotting):
-  python -c "
-  from qcvt import visualize_from_pickle
-  visualize_from_pickle('path/to/prog.pkl', output_path='schedule.png')
-  "
+Then, offline::
+
+    python examples/run_offline_example.py
+
+You can also visualize a compiled-program pickle directly (no qick needed to
+plot, only to unpickle)::
+
+    from qcvt import visualize_from_pickle
+    visualize_from_pickle("path/to/prog.pkl", output_path="schedule.png")
 """
 from __future__ import annotations
 
 import os
 import sys
 
-# Allow running from repo root
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if REPO_ROOT not in sys.path:
-    sys.path.insert(0, REPO_ROOT)
-
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "qick_config.json")
-if not os.path.isfile(CONFIG_PATH):
-    CONFIG_PATH = os.path.join(REPO_ROOT, "qick_config.json")
 
 
 def main() -> int:
+    import matplotlib
+    matplotlib.use("Agg")
+
     try:
-        from qcvt import load_soccfg_from_json, plot_pulse_schedule, export_edge_matrices_csv
-    except ImportError as e:
-        print("Install qcvt and optional dependency qick: pip install -e '.[qick]'", file=sys.stderr)
-        raise e
+        from qcvt import load_soccfg_from_json, visualize_all
+        from qick.asm_v2 import AveragerProgramV2, QickSweep1D
+    except ImportError as exc:
+        print("Install qcvt with qick support: pip install -e '.[qick]'", file=sys.stderr)
+        raise exc
 
     if not os.path.isfile(CONFIG_PATH):
-        print("No qick_config.json found. Save it once when connected:")
-        print("  from qcvt import save_soccfg_to_json")
-        print("  save_soccfg_to_json(soc, 'qick_config.json')")
+        print(f"No soccfg found at {CONFIG_PATH}. Save one with save_soccfg_to_json(soc, path).")
         return 1
 
     soccfg = load_soccfg_from_json(CONFIG_PATH)
 
-    # Minimal program: one generator, one readout, one pulse
-    from qick.asm_v2 import AveragerProgramV2
+    class ExampleProgram(AveragerProgramV2):
+        """Gaussian qubit pulse (gain sweep) + CW pump + square readout."""
 
-    class MinimalProgram(AveragerProgramV2):
         def _initialize(self, cfg):
-            self.declare_gen(ch=cfg["gen_ch"], nqz=cfg["nqz"])
-            self.declare_readout(ch=cfg["ro_ch"], length=cfg["ro_len"])
-            self.add_readoutconfig(ch=cfg["ro_ch"], name="ro", freq=cfg["freq"], gen_ch=cfg["gen_ch"])
-            self.add_pulse(
-                ch=cfg["gen_ch"],
-                name="p",
-                ro_ch=cfg["ro_ch"],
-                style="const",
-                length=cfg["pulse_len"],
-                freq=cfg["freq"],
-                phase=0,
-                gain=0.5,
-            )
+            self.declare_gen(ch=2, nqz=2)  # qubit drive
+            self.declare_gen(ch=6, nqz=2)  # readout drive
+            self.declare_gen(ch=4, nqz=1)  # CW pump
+            self.add_loop("gainloop", 5)
+            self.declare_readout(ch=0, length=8.0)
+            self.add_readoutconfig(ch=0, name="ro", freq=1000, gen_ch=6)
+            self.add_gauss(ch=2, name="gaussenv", sigma=0.3, length=1.8)
+            self.add_pulse(ch=4, name="pump", style="const", length=2.0,
+                           freq=500, phase=0, gain=0.2, mode="periodic")
+            self.add_pulse(ch=2, name="qubit", ro_ch=0, style="arb", envelope="gaussenv",
+                           freq=3200, phase=0, gain=QickSweep1D("gainloop", 0.1, 0.9))
+            self.add_pulse(ch=6, name="readout", ro_ch=0, style="const", length=8.0,
+                           freq=1000, phase=0, gain=0.5)
 
         def _body(self, cfg):
-            self.send_readoutconfig(ch=cfg["ro_ch"], name="ro", t=0)
-            self.pulse(ch=cfg["gen_ch"], name="p", t=0)
-            self.trigger(ros=[cfg["ro_ch"]], pins=[0], t=cfg["pulse_len"], ddr4=False)
+            self.pulse(ch=4, name="pump", t=0)
+            self.send_readoutconfig(ch=0, name="ro", t=0)
+            self.pulse(ch=2, name="qubit", t=1.0)
+            self.delay_auto(0.05)
+            self.pulse(ch=6, name="readout", t=0)
+            self.trigger(ros=[0], pins=[0], t=0.3)
 
-    cfg = {
-        "gen_ch": 0,
-        "ro_ch": 0,
-        "nqz": 1,
-        "freq": 6000,
-        "ro_len": 100,
-        "pulse_len": 200,
-    }
-    prog = MinimalProgram(soccfg, reps=1, final_delay=0, cfg=cfg, reps_innermost=False)
+    prog = ExampleProgram(soccfg, reps=1, final_delay=50, cfg={}, reps_innermost=False)
 
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    plot_pulse_schedule(prog, show_amplitude=True, title="Minimal program (example)")
-    out = os.path.join(os.path.dirname(__file__), "example_schedule.png")
-    plt.savefig(out, dpi=150, bbox_inches="tight")
-    plt.close()
-    print("Saved", out)
-
-    prefix = os.path.join(os.path.dirname(__file__), "example_edges")
-    export_edge_matrices_csv(prog, out_prefix=prefix, t0_us=0.0, t1_us=None)
-    print("Saved", prefix + "_state.csv", "and", prefix + "_amp.csv")
-
+    out_dir = os.path.join(os.path.dirname(__file__), "output")
+    outputs = visualize_all(
+        prog,
+        out_dir=out_dir,
+        title="QCVT example: gaussian qubit pulse (gain sweep), CW pump, readout",
+        show_amplitude=True,
+        physical_port_labels={"02": "qubit drive", "26": "readout out",
+                              "24": "pump", "20": "input 0"},
+    )
+    for key, path in outputs.items():
+        if path:
+            print(f"  {key}: {path}")
     return 0
 
 
