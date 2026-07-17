@@ -26,10 +26,15 @@ pip install -e ".[qick]"    # also install qick (needed to build programs / load
 ### Live view while running experiments
 
 ```python
-from qcvt import show_schedule
+from qcvt import show_schedule, review_schedule
 
 prog = YourProgram(soccfg, reps=1, final_delay=0, cfg=config)
 show_schedule(prog, title="My experiment")   # interactive; no files written
+
+# Pre-submit gate: save a PNG, optionally prompt before acquire()
+ok = review_schedule(prog, save_dir="qcvt_reviews/my_exp", show=True, confirm=True)
+if not ok:
+    raise RuntimeError("aborted")
 ```
 
 ### Everything at once
@@ -84,13 +89,21 @@ Writes `schedule.png`, `amplitudes.csv/.npz`, `edges_state.csv/.png` and
 - **Periodic** (CW) pulses hatched and extended to the next event on their channel.
 - **Swept** parameters (time, length, gain) drawn as translucent ranges and tagged
   in the pulse label; an optional amplitude panel shows gain sweeps as a band.
-- Correct amplitudes for `const`, `arb` (envelope) and `flat_top` pulses.
+- Correct amplitudes for all QICK pulse styles:
+  - ``const`` — rectangle
+  - ``arb`` — curved envelopes (gaussian, DRAG, arbitrary I/Q) sampled at the DAC rate
+  - ``flat_top`` — rising ramp + plateau + falling ramp (QICK's three-segment convention)
+- **Multi-timescale** programs (ns qubit pulses next to µs readout / ms CW):
+  - set ``t0_us`` / ``max_time_us`` to zoom the viewing window
+  - short pulses that would be invisible get a tick + duration callout
+  - when length dynamic range is large, an automatic zoom inset focuses on the short pulses
 
 ## API reference
 
 | Function | Returns | Description |
 |----------|---------|-------------|
 | `show_schedule(prog, ...)` | `None` | Interactive display (no files saved) |
+| `review_schedule(prog, save_dir=..., ...)` | `bool` | Pre-submit gate: save PNG, optional confirm/abort before acquire |
 | `visualize_all(prog, out_dir, ...)` | `dict` | Schedule PNG + amplitude CSV/NPZ + edge matrices + table PNGs |
 | `plot_pulse_schedule(prog, ...)` | `ax` or `(ax, ax_amp)` | Draw the schedule (and optional amplitude panel) |
 | `visualize_from_pickle(path, ...)` | `(prog, ax)` | Load a compiled-program pickle and plot |

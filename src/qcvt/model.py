@@ -367,17 +367,56 @@ def _gencfg(prog: Any, ch: int) -> dict:
         return {}
 
 
+def _sample_dt_us(gencfg: dict) -> float:
+    """Per-sample spacing (us) for a generator envelope at the DAC sample rate."""
+    fs = float(gencfg.get("fs", 0.0))
+    if fs <= 0:
+        f_fabric = float(gencfg.get("f_fabric", 1000.0)) or 1000.0
+        samps_per_clk = float(gencfg.get("samps_per_clk", 1)) or 1.0
+        fs = f_fabric * samps_per_clk
+    return 1.0 / fs
+
+
+def _envelope_magnitude(prog: Any, ch: int, envelope: str) -> Optional[np.ndarray]:
+    """Return the envelope magnitude samples (unitless DAC counts), or ``None``."""
+    envelopes = getattr(prog, "envelopes", None)
+    try:
+        data = np.asarray(envelopes[ch]["envs"][envelope]["data"])
+    except Exception:
+        return None
+    if data.size == 0:
+        return None
+    if data.ndim == 2 and data.shape[1] >= 2:
+        return np.hypot(data[:, 0].astype(float), data[:, 1].astype(float))
+    return np.abs(data.astype(float))
+
+
+def _flat_top_plateau_us(prog: Any, event: PulseEvent) -> float:
+    """Duration of the flat (DDS) segment of a ``flat_top`` pulse, in us."""
+    try:
+        length = getattr(prog, "pulses", {})[event.name].params.get("length")
+        return max(0.0, param_nominal(length))
+    except Exception:
+        # Fall back: total length minus whatever we can attribute to the ramps.
+        return max(0.0, event.length)
+
+
 def amplitude_trace(prog: Any, event: PulseEvent, length_us: Optional[float] = None,
                     dac_units: bool = True, gain_override: Optional[float] = None):
     """Return ``(t_us, amp)`` samples describing one pulse's amplitude envelope.
 
-    * ``const``    -> a rectangle at ``|gain| * scale`` for the pulse length.
-    * ``flat_top`` -> a rectangle (the flat plateau dominates; edges are short
-      ramps that are not resolved here).
-    * ``arb``      -> the stored envelope magnitude, scaled by ``|gain| * scale``.
+    Supported styles:
+
+    * ``const``    — rectangle at ``|gain| * scale`` for the pulse length.
+    * ``arb``      — stored envelope magnitude (gaussian, DRAG, arbitrary I/Q, …),
+      scaled by ``|gain| * scale``.
+    * ``flat_top`` — first half of the envelope as the rising ramp, a plateau of
+      ``params['length']``, then the second half as the falling ramp (QICK's
+      three-segment flat_top convention).
 
     ``scale`` is ``maxv`` (DAC units) when ``dac_units`` else 1.0 (normalized).
-    ``length_us`` overrides the pulse length (used for periodic extension).
+    ``length_us`` overrides the pulse length (used for periodic extension of
+    ``const`` pulses).
     """
     if length_us is None:
         length_us = event.length
@@ -386,38 +425,57 @@ def amplitude_trace(prog: Any, event: PulseEvent, length_us: Optional[float] = N
     gencfg = _gencfg(prog, event.ch)
     maxv = int(gencfg.get("maxv", 32766))
     scale = maxv if dac_units else 1.0
+    amp_peak = gain * scale
 
-    def _box():
-        return (np.array([t0, t0, t0 + length_us, t0 + length_us]),
-                np.array([0.0, gain * scale, gain * scale, 0.0]))
+    def _box(duration: float = length_us):
+        return (np.array([t0, t0, t0 + duration, t0 + duration]),
+                np.array([0.0, amp_peak, amp_peak, 0.0]))
 
-    if event.style in ("const", "flat_top") or not event.envelope:
+    style = event.style
+    if style == "const" or not event.envelope:
         return _box()
 
-    envelopes = getattr(prog, "envelopes", None)
-    try:
-        data = np.asarray(envelopes[event.ch]["envs"][event.envelope]["data"])
-    except Exception:
-        return _box()
-    if data.ndim == 2 and data.shape[1] >= 2:
-        mag = np.hypot(data[:, 0].astype(float), data[:, 1].astype(float))
-    else:
-        mag = np.abs(data.astype(float))
-    if mag.size == 0:
+    mag = _envelope_magnitude(prog, event.ch, event.envelope)
+    if mag is None or mag.size == 0:
         return _box()
 
-    # Envelope samples are at the generator's DAC sample rate fs (MHz), so the
-    # per-sample spacing is 1/fs.  fs == f_fabric * samps_per_clk.
-    fs = float(gencfg.get("fs", 0.0))
-    if fs <= 0:
-        f_fabric = float(gencfg.get("f_fabric", 1000.0)) or 1000.0
-        samps_per_clk = float(gencfg.get("samps_per_clk", 1)) or 1.0
-        fs = f_fabric * samps_per_clk
-    dt_us = 1.0 / fs
-    t = t0 + np.arange(mag.size) * dt_us
+    dt_us = _sample_dt_us(gencfg)
     peak = float(np.max(mag)) or 1.0
-    amp = (mag / peak) * gain * scale
-    # Anchor the trace to the baseline at both ends for clean fills/plots.
+    unit = mag / peak
+
+    if style == "flat_top":
+        # QICK convention: the envelope is a full up+down shape; the first half
+        # is the rising ramp, the second half the falling ramp, and a DDS
+        # plateau of params['length'] sits between them.  Odd-length envelopes
+        # skip the middle sample.
+        n = unit.size
+        mid = n // 2
+        up = unit[:mid]
+        down = unit[mid + (n % 2):]
+        plateau = _flat_top_plateau_us(prog, event)
+        t_up = t0 + np.arange(up.size) * dt_us
+        t_flat0 = t0 + up.size * dt_us
+        t_flat1 = t_flat0 + plateau
+        t_down = t_flat1 + np.arange(down.size) * dt_us
+        t_parts = [np.array([t0])]
+        a_parts = [np.array([0.0])]
+        if up.size:
+            t_parts.append(t_up)
+            a_parts.append(up * amp_peak)
+        t_parts.append(np.array([t_flat0, t_flat1]))
+        a_parts.append(np.array([amp_peak, amp_peak]))
+        if down.size:
+            t_parts.append(t_down)
+            a_parts.append(down * amp_peak)
+            t_parts.append(np.array([t_down[-1]]))
+        else:
+            t_parts.append(np.array([t_flat1]))
+        a_parts.append(np.array([0.0]))
+        return np.concatenate(t_parts), np.concatenate(a_parts)
+
+    # arb (and any other envelope-driven style): play the full envelope.
+    t = t0 + np.arange(unit.size) * dt_us
+    amp = unit * amp_peak
     t = np.concatenate([[t0], t, [t[-1]]])
     amp = np.concatenate([[0.0], amp, [0.0]])
     return t, amp
