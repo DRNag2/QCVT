@@ -28,6 +28,7 @@ from .export import (
 from .io import (
     load_program_pickle,
     load_soccfg_from_json,
+    review_schedule,
     save_soccfg_to_json,
     visualize_all,
     visualize_from_pickle,
@@ -62,4 +63,5 @@ __all__ = [
     "load_program_pickle",
     "visualize_from_pickle",
     "visualize_all",
+    "review_schedule",
 ]

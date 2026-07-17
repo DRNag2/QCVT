@@ -7,22 +7,34 @@ every pulse drawn as a labelled bar on a shared microsecond axis.  An optional
 amplitude panel reconstructs the output amplitude vs. time.  Swept parameters
 (time, length, gain) are drawn as translucent ranges so you can see, at a glance,
 what the loop actually varies before the program is sent to the RFSoC.
+
+Multi-timescale programs (ns-scale qubit pulses next to µs-scale readout / ms-scale
+CW pumps) are handled by:
+
+* an explicit ``t0_us`` / ``max_time_us`` viewing window;
+* duration callouts + tick marks for pulses that would otherwise be invisible;
+* optional zoom insets around clusters of short pulses when the dynamic range
+  of pulse lengths is large.
 """
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
-from .model import Schedule, amplitude_trace, extract_schedule
+from .model import PulseEvent, Schedule, amplitude_trace, extract_schedule
 
 
 _GEN_HEIGHT = 0.62
 _ADC_HEIGHT = 0.4
 _ADC_COLOR = "#1a7a1a"
+# Pulses shorter than this fraction of the viewing window get a duration callout.
+_SHORT_FRAC = 0.015
+# If longest/shortest (visible) gen pulse exceeds this, offer an auto-inset.
+_INSET_DYNAMIC_RANGE = 25.0
 
 
 def _as_schedule(prog_or_schedule) -> Schedule:
@@ -64,9 +76,42 @@ def _adc_label(sched: Schedule, ch: int, physical_port_labels) -> str:
     return label
 
 
+def _format_duration(us: float) -> str:
+    if us < 0.001:
+        return f"{us * 1e6:.0f} ps"
+    if us < 1.0:
+        return f"{us * 1e3:.2g} ns"
+    if us < 1000.0:
+        return f"{us:.3g} µs"
+    return f"{us / 1000.0:.3g} ms"
+
+
+def _short_events(events: Sequence[PulseEvent], draw_lengths: dict,
+                  window_us: float) -> List[PulseEvent]:
+    thresh = max(_SHORT_FRAC * window_us, 1e-6)
+    out = []
+    for e in events:
+        if e.kind != "gen":
+            continue
+        if draw_lengths.get(id(e), e.length) < thresh:
+            out.append(e)
+    return out
+
+
+def _choose_inset_window(short: Sequence[PulseEvent], pad_us: float) -> Optional[Tuple[float, float]]:
+    if not short:
+        return None
+    starts = [e.t_start for e in short]
+    ends = [e.t_start + e.length for e in short]
+    lo, hi = min(starts), max(ends)
+    span = max(hi - lo, 1e-3)
+    return max(0.0, lo - pad_us), hi + pad_us + 0.05 * span
+
+
 def plot_pulse_schedule(
     prog,
     ax=None,
+    t0_us: float = 0.0,
     max_time_us: Optional[float] = None,
     gen_ch_labels: Optional[dict] = None,
     physical_port_labels: Optional[dict] = None,
@@ -76,6 +121,7 @@ def plot_pulse_schedule(
     title: Optional[str] = None,
     label_pulses: bool = True,
     schedule: Optional[Schedule] = None,
+    insets: Optional[bool] = None,
 ):
     """Plot a pulse schedule from a compiled QICK ``asm_v2`` program.
 
@@ -86,6 +132,8 @@ def plot_pulse_schedule(
     ax : matplotlib axes, optional
         Axes to draw the schedule on.  If ``None`` a new figure is created (and,
         when ``show_amplitude`` is set, a second amplitude panel is added).
+    t0_us : float
+        Left limit of the time axis (viewing-window start).
     max_time_us : float, optional
         Right limit of the time axis.  If ``None`` it is inferred from the schedule.
     gen_ch_labels : dict, optional
@@ -104,6 +152,10 @@ def plot_pulse_schedule(
         Write each pulse's name on its bar.
     schedule : Schedule, optional
         Pre-extracted schedule (avoids re-extraction when plotting repeatedly).
+    insets : bool or None
+        If ``True``, always try to add a zoom inset around short pulses.
+        If ``None`` (default), add an inset automatically when the schedule's
+        pulse-length dynamic range is large.  If ``False``, never add an inset.
 
     Returns
     -------
@@ -115,7 +167,7 @@ def plot_pulse_schedule(
 
     sched = schedule if schedule is not None else _as_schedule(prog)
     ax_amp = None
-    want_amp = show_amplitude  # controls the return shape
+    want_amp = show_amplitude
 
     if not sched:
         if ax is None:
@@ -130,21 +182,18 @@ def plot_pulse_schedule(
     draw_amp = show_amplitude
     if show_amplitude and owns_figure:
         _, (ax, ax_amp) = plt.subplots(
-            2, 1, figsize=(9, 6), height_ratios=[1.3, 1.0], sharex=True,
+            2, 1, figsize=(10, 6.5), height_ratios=[1.35, 1.0], sharex=True,
             constrained_layout=True,
         )
     elif owns_figure:
-        _, ax = plt.subplots(figsize=(9, 4.5), constrained_layout=True)
+        _, ax = plt.subplots(figsize=(10, 4.5), constrained_layout=True)
     elif show_amplitude:
-        # Caller supplied an axes; we can't safely split it, so skip the panel
-        # but still honour the tuple return contract.
         draw_amp = False
 
     gen_chs = sched.gen_chs
     adc_chs = sched.adc_chs if show_readout_triggers else []
     colors = _channel_colors(gen_chs)
 
-    # Lane layout: generators on top, readouts below.
     y_pos = {}
     idx = 0
     for ch in gen_chs:
@@ -154,18 +203,71 @@ def plot_pulse_schedule(
         y_pos[("adc", ch)] = idx
         idx += 1
 
-    draw_lengths = sched.draw_lengths(max_time_us)
-    suppressed = sched.suppressed_events()
-
-    # Compute the time window.
+    # Window end used for periodic extension + short-pulse detection.
     if max_time_us is not None:
         end_us = float(max_time_us)
     else:
         ends = [max(e.t_end, e.t_max + e.len_max) for e in sched.events]
-        end_us = max(ends, default=1.0) * 1.03
-    end_us = max(end_us, 1e-6)
+        end_us = max(ends, default=t0_us + 1.0) * 1.03
+    end_us = max(end_us, t0_us + 1e-6)
+    window_us = end_us - t0_us
 
-    # --- generator + readout bars ------------------------------------------------
+    draw_lengths = sched.draw_lengths(end_us)
+    suppressed = sched.suppressed_events()
+
+    _draw_schedule_bars(
+        ax, sched, y_pos, colors, draw_lengths, suppressed,
+        gen_ch_labels, physical_port_labels, label_pulses,
+        t0_us, end_us, window_us, gen_chs, adc_chs,
+    )
+    if title:
+        ax.set_title(title, fontsize=11)
+
+    # Duration callouts for pulses that would be invisible at this zoom.
+    short = [e for e in _short_events(sched.gen_events, draw_lengths, window_us)
+             if id(e) not in suppressed and t0_us <= e.t_start <= end_us]
+    for e in short:
+        y = y_pos.get(("gen", e.ch))
+        if y is None:
+            continue
+        color = colors.get(e.ch, "C0")
+        ax.plot([e.t_start, e.t_start], [y - _GEN_HEIGHT / 2, y + _GEN_HEIGHT / 2],
+                color=color, linewidth=1.6, zorder=4)
+        ax.annotate(
+            f"{e.name}\n{_format_duration(e.length)}",
+            xy=(e.t_start, y), xytext=(6, 10), textcoords="offset points",
+            fontsize=6.5, color=color,
+            arrowprops=dict(arrowstyle="-", color=color, lw=0.7),
+            zorder=5,
+        )
+
+    # Auto inset when short and long pulses coexist in the same window.
+    gen_lens = [draw_lengths.get(id(e), e.length) for e in sched.gen_events
+                if id(e) not in suppressed and e.length > 0]
+    use_inset = insets
+    if use_inset is None and gen_lens and short:
+        use_inset = (max(gen_lens) / max(min(gen_lens), 1e-9)) >= _INSET_DYNAMIC_RANGE
+    if use_inset and owns_figure and short:
+        inset_win = _choose_inset_window(short, pad_us=max(0.05, 0.15 * window_us * _SHORT_FRAC))
+        if inset_win is not None:
+            _add_zoom_inset(
+                ax, sched, y_pos, colors, draw_lengths, suppressed,
+                gen_ch_labels, physical_port_labels, gen_chs, adc_chs,
+                inset_win[0], inset_win[1],
+            )
+
+    if draw_amp and ax_amp is not None:
+        _draw_amplitude_panel(ax_amp, sched, colors, draw_lengths,
+                              amplitude_units, t0_us, end_us, gen_ch_labels)
+
+    return (ax, ax_amp) if want_amp else ax
+
+
+def _draw_schedule_bars(
+    ax, sched, y_pos, colors, draw_lengths, suppressed,
+    gen_ch_labels, physical_port_labels, label_pulses,
+    t0_us, end_us, window_us, gen_chs, adc_chs,
+):
     for e in sched.gen_events:
         if id(e) in suppressed:
             continue
@@ -175,7 +277,6 @@ def plot_pulse_schedule(
         color = colors.get(e.ch, "C0")
         draw_len = draw_lengths.get(id(e), e.length)
 
-        # Sweep ranges drawn behind the nominal bar.
         if e.time_swept:
             ax.barh(y, (e.t_max + draw_len) - e.t_min, left=e.t_min, height=_GEN_HEIGHT,
                     color=color, alpha=0.15, edgecolor="none", zorder=1)
@@ -188,12 +289,14 @@ def plot_pulse_schedule(
                 hatch="////" if e.periodic else None,
                 alpha=0.55 if e.periodic else 1.0)
 
-        if label_pulses:
+        if label_pulses and draw_len >= _SHORT_FRAC * window_us:
             label = e.name
             if e.swept_params:
                 label += f"\n[sweep: {', '.join(e.swept_params)}]"
+            if e.style and e.style not in ("const",):
+                label += f"\n({e.style})"
             center = e.t_start + max(draw_len, 0.0) / 2.0
-            wide_enough = max(draw_len, 0.0) > 0.08 * end_us
+            wide_enough = max(draw_len, 0.0) > 0.08 * window_us
             if wide_enough:
                 ax.text(center, y, label, ha="center", va="center",
                         fontsize=7, color="white", zorder=3, fontweight="bold")
@@ -208,7 +311,6 @@ def plot_pulse_schedule(
         ax.barh(y, max(e.length, 0.01), left=e.t_start, height=_ADC_HEIGHT,
                 color=_ADC_COLOR, alpha=0.7, edgecolor="black", linewidth=0.8, zorder=2)
 
-    # --- axis cosmetics ----------------------------------------------------------
     y_ticks, y_labels = [], []
     for ch in gen_chs:
         y_ticks.append(y_pos[("gen", ch)])
@@ -223,12 +325,10 @@ def plot_pulse_schedule(
 
     ax.set_yticks(y_ticks)
     ax.set_yticklabels(y_labels, fontsize=8)
-    ax.set_ylim(-0.6, len(y_pos) - 0.4)
-    ax.set_xlim(0, end_us)
+    ax.set_ylim(-0.6, max(len(y_pos) - 0.4, 0.5))
+    ax.set_xlim(t0_us, end_us)
     ax.set_xlabel("Time (µs)")
     ax.grid(True, axis="x", alpha=0.3)
-    if title:
-        ax.set_title(title, fontsize=11)
 
     legend_items = []
     if any(e.periodic for e in sched.gen_events):
@@ -243,19 +343,67 @@ def plot_pulse_schedule(
     if legend_items:
         ax.legend(handles=legend_items, loc="upper right", fontsize=7, framealpha=0.9)
 
-    if draw_amp and ax_amp is not None:
-        _draw_amplitude_panel(ax_amp, sched, colors, draw_lengths,
-                              amplitude_units, end_us, gen_ch_labels)
 
-    return (ax, ax_amp) if want_amp else ax
+def _add_zoom_inset(
+    ax, sched, y_pos, colors, draw_lengths, suppressed,
+    gen_ch_labels, physical_port_labels, gen_chs, adc_chs,
+    z0, z1,
+):
+    """Overlay a zoom inset on the schedule axes around ``[z0, z1]``."""
+    # Place the inset in the upper-left of the schedule panel.
+    inset = ax.inset_axes([0.02, 0.55, 0.38, 0.42])
+    window_us = max(z1 - z0, 1e-6)
+    # Re-draw bars into the inset without lane labels / legend clutter.
+    for e in sched.gen_events:
+        if id(e) in suppressed:
+            continue
+        if e.t_end < z0 or e.t_start > z1:
+            continue
+        y = y_pos.get(("gen", e.ch))
+        if y is None:
+            continue
+        color = colors.get(e.ch, "C0")
+        draw_len = draw_lengths.get(id(e), e.length)
+        inset.barh(y, max(draw_len, 0.0), left=e.t_start, height=_GEN_HEIGHT,
+                   color=color, edgecolor="black", linewidth=0.5, zorder=2,
+                   hatch="////" if e.periodic else None,
+                   alpha=0.55 if e.periodic else 1.0)
+        inset.text(e.t_start + max(draw_len, 0.0) / 2.0, y,
+                   f"{e.name}\n{_format_duration(e.length)}",
+                   ha="center", va="center", fontsize=6, color="white",
+                   fontweight="bold", zorder=3)
+    for e in sched.adc_events:
+        if e.t_end < z0 or e.t_start > z1:
+            continue
+        y = y_pos.get(("adc", e.ch))
+        if y is None:
+            continue
+        inset.barh(y, max(e.length, 0.0), left=e.t_start, height=_ADC_HEIGHT,
+                   color=_ADC_COLOR, alpha=0.7, edgecolor="black", linewidth=0.6)
+
+    inset.set_xlim(z0, z1)
+    inset.set_ylim(ax.get_ylim())
+    inset.set_yticks([])
+    inset.set_title(f"zoom {_format_duration(z0)}–{_format_duration(z1)}", fontsize=7)
+    inset.grid(True, axis="x", alpha=0.3)
+    for spine in inset.spines.values():
+        spine.set_color("#444444")
+        spine.set_linewidth(1.0)
+    # Indicate the zoomed region on the parent axes.
+    try:
+        ax.indicate_inset_zoom(inset, edgecolor="#444444")
+    except Exception:
+        ax.axvspan(z0, z1, color="0.5", alpha=0.08, zorder=0)
 
 
 def _draw_amplitude_panel(ax_amp, sched: Schedule, colors, draw_lengths,
-                          amplitude_units, end_us, gen_ch_labels):
+                          amplitude_units, t0_us, end_us, gen_ch_labels):
     dac_units = amplitude_units == "dac"
     prog = sched.prog
     seen = set()
     for e in sched.gen_events:
+        if e.t_end < t0_us or e.t_start > end_us:
+            continue
         draw_len = draw_lengths.get(id(e), e.length)
         color = colors.get(e.ch, "C0")
         label = (gen_ch_labels or {}).get(e.ch, f"gen {e.ch}")
@@ -281,9 +429,11 @@ def _draw_amplitude_panel(ax_amp, sched: Schedule, colors, draw_lengths,
         seen.add(e.ch)
 
     for e in sched.adc_events:
+        if e.t_end < t0_us or e.t_start > end_us:
+            continue
         ax_amp.axvspan(e.t_start, e.t_end, color=_ADC_COLOR, alpha=0.2, lw=0)
 
-    ax_amp.set_xlim(0, end_us)
+    ax_amp.set_xlim(t0_us, end_us)
     ax_amp.set_ylim(bottom=0)
     ax_amp.set_xlabel("Time (µs)")
     ax_amp.set_ylabel("Amplitude (DAC units)" if dac_units else "Amplitude (norm)")
@@ -304,6 +454,9 @@ def show_schedule(
     amplitude_units: str = "dac",
     gen_ch_labels: Optional[dict] = None,
     physical_port_labels: Optional[dict] = None,
+    t0_us: float = 0.0,
+    max_time_us: Optional[float] = None,
+    insets: Optional[bool] = None,
 ) -> None:
     """Quickly display a pulse schedule interactively (no files saved).
 
@@ -317,5 +470,8 @@ def show_schedule(
         gen_ch_labels=gen_ch_labels,
         physical_port_labels=physical_port_labels,
         title=title,
+        t0_us=t0_us,
+        max_time_us=max_time_us,
+        insets=insets,
     )
     plt.show()

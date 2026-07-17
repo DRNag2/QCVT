@@ -68,6 +68,8 @@ def visualize_from_pickle(
     show_amplitude: bool = True,
     amplitude_units: str = "dac",
     show: bool = False,
+    t0_us: float = 0.0,
+    max_time_us: Optional[float] = None,
 ):
     """Load a compiled-program pickle and plot its pulse schedule.
 
@@ -85,6 +87,8 @@ def visualize_from_pickle(
         ``"dac"`` or ``"norm"``.
     show : bool
         Call ``plt.show()`` (defaults to ``False`` so the function is headless-safe).
+    t0_us, max_time_us :
+        Optional viewing window in microseconds.
 
     Returns
     -------
@@ -98,6 +102,8 @@ def visualize_from_pickle(
         show_amplitude=show_amplitude,
         amplitude_units=amplitude_units,
         title=title or "Pulse schedule",
+        t0_us=t0_us,
+        max_time_us=max_time_us,
     )
     ax = result[0] if isinstance(result, tuple) else result
     if output_path:
@@ -106,6 +112,115 @@ def visualize_from_pickle(
     if show:
         plt.show()
     return prog, ax
+
+
+def review_schedule(
+    prog,
+    save_dir: Optional[str] = None,
+    title: str = "Pulse schedule (pre-submit review)",
+    show_amplitude: bool = True,
+    amplitude_units: str = "dac",
+    gen_ch_labels: Optional[dict] = None,
+    physical_port_labels: Optional[dict] = None,
+    t0_us: float = 0.0,
+    max_time_us: Optional[float] = None,
+    show: bool = False,
+    confirm: bool = False,
+    full_export: bool = False,
+) -> bool:
+    """Pre-submission gate: visualize the schedule before sending it to the RFSoC.
+
+    Always saves a schedule PNG when ``save_dir`` is set (created if missing).
+    Optionally displays the figure and/or prompts for confirmation.
+
+    Parameters
+    ----------
+    prog :
+        Compiled QICK program.
+    save_dir : str, optional
+        Directory for the review PNG (and optional full export).  If ``None``,
+        nothing is written to disk.
+    title : str
+        Plot title.
+    show : bool
+        If ``True``, call ``plt.show()`` (interactive).  Defaults to ``False``
+        so this is safe in headless / scripted runs.
+    confirm : bool
+        If ``True``, prompt the user with ``Proceed with acquisition? [y/N]``.
+        Returns ``False`` if they decline (caller should abort ``prog.acquire``).
+    full_export : bool
+        If ``True`` and ``save_dir`` is set, also write amplitude CSVs and edge
+        matrices via :func:`visualize_all`.
+
+    Returns
+    -------
+    bool
+        ``True`` if acquisition should proceed, ``False`` if the user aborted.
+        When ``confirm`` is ``False``, always returns ``True``.
+    """
+    import matplotlib.pyplot as plt
+
+    schedule_path = None
+    if save_dir is not None and full_export:
+        os.makedirs(save_dir, exist_ok=True)
+        visualize_all(
+            prog,
+            out_dir=save_dir,
+            title=title,
+            show_amplitude=show_amplitude,
+            amplitude_units=amplitude_units,
+            t0_us=t0_us,
+            t1_us=max_time_us,
+            gen_ch_labels=gen_ch_labels,
+            physical_port_labels=physical_port_labels,
+            show=False,
+        )
+        schedule_path = os.path.join(save_dir, "schedule.png")
+        print(f"QCVT review saved: {schedule_path}")
+        if show:
+            plot_pulse_schedule(
+                prog,
+                show_amplitude=show_amplitude,
+                amplitude_units=amplitude_units,
+                gen_ch_labels=gen_ch_labels,
+                physical_port_labels=physical_port_labels,
+                title=title,
+                t0_us=t0_us,
+                max_time_us=max_time_us,
+            )
+            plt.show()
+    else:
+        result = plot_pulse_schedule(
+            prog,
+            show_amplitude=show_amplitude,
+            amplitude_units=amplitude_units,
+            gen_ch_labels=gen_ch_labels,
+            physical_port_labels=physical_port_labels,
+            title=title,
+            t0_us=t0_us,
+            max_time_us=max_time_us,
+        )
+        ax = result[0] if isinstance(result, tuple) else result
+        if save_dir is not None:
+            os.makedirs(save_dir, exist_ok=True)
+            schedule_path = os.path.join(save_dir, "schedule.png")
+            ax.figure.savefig(schedule_path, dpi=150, bbox_inches="tight")
+            print(f"QCVT review saved: {schedule_path}")
+        if show:
+            plt.show()
+        else:
+            plt.close(ax.figure)
+
+    if not confirm:
+        return True
+    try:
+        answer = input("Proceed with RFSoC acquisition? [y/N] ").strip().lower()
+    except EOFError:
+        answer = ""
+    if answer in ("y", "yes"):
+        return True
+    print("Acquisition aborted by user.")
+    return False
 
 
 def visualize_all(
@@ -122,6 +237,7 @@ def visualize_all(
     schedule_dpi: int = 150,
     table_dpi: int = 200,  # accepted for backwards compatibility
     show: bool = False,
+    insets: Optional[bool] = None,
 ) -> dict:
     """Generate every visualization artifact for ``prog`` in ``out_dir``.
 
@@ -143,6 +259,9 @@ def visualize_all(
         show_amplitude=show_amplitude,
         amplitude_units=amplitude_units,
         title=title,
+        t0_us=t0_us,
+        max_time_us=t1_us,
+        insets=insets,
     )
     ax = result[0] if isinstance(result, tuple) else result
     ax.figure.savefig(schedule_path, dpi=schedule_dpi, bbox_inches="tight")
