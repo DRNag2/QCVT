@@ -1,120 +1,117 @@
-# QCVT — Quantum Control Visualization Tool
+# QCVT — QICK Control Visualization Tool
 
-Visualization and edge-matrix export for [QICK](https://github.com/openquantumhardware/qick) `asm_v2` pulse programs. Works both online (connected to RFSoC) and offline.
+Visualize and export the pulse schedule of a [QICK](https://github.com/openquantumhardware/qick)
+`asm_v2` program **before it is sent to an RFSoC**, so you can confirm timing,
+durations, amplitudes and sweeps are what you intended. Works online (connected)
+and fully offline (from a saved config or a compiled-program pickle).
+
+QCVT reads a *compiled* program (an `AveragerProgramV2` instance) and turns it
+into a sweep-aware `Schedule`, expressed entirely in **microseconds**, that drives
+the plots and exports. Timing is taken directly from QICK's own time parameters
+(`t_params`) and pulse lengths (`get_length()`), and `Delay` instructions are
+accumulated to recover absolute times — so what you see matches what the board
+plays, even across generators and readouts running at different clock rates.
+
+![Example schedule](examples/example_schedule.png)
 
 ## Install
 
-From the repo root:
-
 ```bash
-pip install -e .
-```
-
-With optional QICK support (needed for `load_soccfg_from_json` and building programs from config):
-
-```bash
-pip install -e ".[qick]"
+pip install -e .            # core: matplotlib, numpy, pandas, cloudpickle
+pip install -e ".[qick]"    # also install qick (needed to build programs / load soccfg)
 ```
 
 ## Quick start
 
-### Online (connected to RFSoC)
-
-Quick interactive display while running experiments:
+### Live view while running experiments
 
 ```python
 from qcvt import show_schedule
 
-prog = YourProgram(soccfg, reps=1, cfg=config)
-show_schedule(prog, title="My experiment")  # displays interactively, returns None
+prog = YourProgram(soccfg, reps=1, final_delay=0, cfg=config)
+show_schedule(prog, title="My experiment")   # interactive; no files written
 ```
 
-Or with `run_and_save_rfsoc_prog`:
+### Everything at once
 
 ```python
-iq_list, prog = run_and_save_rfsoc_prog(Qubit_spectroscopy, config, visualize=True)
+from qcvt import visualize_all
+
+outputs = visualize_all(prog, out_dir="output/", title="Qubit spectroscopy",
+                        show_amplitude=True)
+# outputs -> {schedule_png, amplitudes_csv, amplitudes_npz,
+#             edges_state_csv, edges_amp_csv, edges_state_png, edges_amp_png}
 ```
 
-### Offline (no RFSoC connection)
-
-#### From a compiled program pickle
+### From a compiled-program pickle (no RFSoC, no qick needed to plot)
 
 ```python
 from qcvt import visualize_from_pickle
 
-prog, ax = visualize_from_pickle("path/to/compiled_program.pkl", output_path="schedule.png")
+prog, ax = visualize_from_pickle("compiled_program.pkl", output_path="schedule.png")
 ```
 
-#### From a program built with saved soccfg
-
-1. **Once, when connected to the RFSoC**, save the config:
-
-   ```python
-   from qcvt import save_soccfg_to_json
-   save_soccfg_to_json(soc, "qick_config.json")
-   ```
-
-2. **Offline**, load config, build your program, then visualize:
-
-   ```python
-   from qcvt import load_soccfg_from_json, show_schedule
-
-   soccfg = load_soccfg_from_json("qick_config.json")
-   prog = YourProgram(soccfg, reps=1, cfg=config)
-   show_schedule(prog)  # quick interactive view
-   ```
-
-### Generate all outputs at once
-
-Use `visualize_all()` to generate schedule plot, amplitude CSV, edge matrices, and table PNGs in one call:
+### Rebuild a program offline from a saved config
 
 ```python
-from qcvt import visualize_all, load_soccfg_from_json
+from qcvt import save_soccfg_to_json, load_soccfg_from_json, show_schedule
 
+# once, while connected:
+save_soccfg_to_json(soc, "qick_config.json")
+
+# later, offline:
 soccfg = load_soccfg_from_json("qick_config.json")
-prog = YourProgram(soccfg, reps=1, cfg=config)
-
-outputs = visualize_all(
-    prog,
-    out_dir="output/",
-    title="Qubit spectroscopy",
-    show_amplitude=True,
-    show=True,  # also display interactively
-)
-
-# outputs dict contains paths to all generated files:
-# - schedule_png, amplitudes_csv, amplitudes_npz
-# - edges_state_csv, edges_amp_csv
-# - edges_state_png, edges_amp_png
+prog = YourProgram(soccfg, reps=1, final_delay=0, cfg=config)
+show_schedule(prog)
 ```
 
-### Command-line
+See `examples/run_offline_example.py` for a complete, runnable example (it uses the
+bundled `examples/qick_config.json`).
+
+### Command line
 
 ```bash
-qcvt --pickle path/to/prog.pkl --out-dir ./out
+qcvt --pickle prog.pkl --out-dir ./out --show-amplitude
 ```
 
-This writes:
+Writes `schedule.png`, `amplitudes.csv/.npz`, `edges_state.csv/.png` and
+`edges_amp.csv/.png`.
 
-- `out/schedule.png` — pulse schedule (and amplitude panel if `--show-amplitude`)
-- `out/edges_state.csv`, `out/edges_amp.csv` — edge matrices
-- `out/edges_state.png`, `out/edges_amp.png` — table renderings of the matrices
+## What the plot shows
+
+- One lane per generator and per readout channel, on a shared microsecond axis.
+- Each pulse as a labelled bar; readout integration windows as green bars.
+- **Periodic** (CW) pulses hatched and extended to the next event on their channel.
+- **Swept** parameters (time, length, gain) drawn as translucent ranges and tagged
+  in the pulse label; an optional amplitude panel shows gain sweeps as a band.
+- Correct amplitudes for `const`, `arb` (envelope) and `flat_top` pulses.
 
 ## API reference
 
 | Function | Returns | Description |
 |----------|---------|-------------|
-| `show_schedule(prog, ...)` | `None` | Quick interactive display (no files saved) |
-| `visualize_all(prog, out_dir, ...)` | `dict` | Generate all outputs (schedule, CSV, edge matrices, PNGs) |
-| `plot_pulse_schedule(prog, ...)` | `ax` | Plot channel schedule and optional amplitude panel |
-| `export_amplitude_traces_csv(prog, csv_path, t0_us, t1_us, ...)` | `str` | Export amplitude samples to CSV + NPZ |
-| `export_edge_matrices_csv(prog, out_prefix, t0_us, t1_us, ...)` | `(str, str)` | Export state and amplitude edge matrices |
-| `csv_to_table_png(csv_path, png_path, title)` | `None` | Render CSV as PNG table with highlighting |
+| `show_schedule(prog, ...)` | `None` | Interactive display (no files saved) |
+| `visualize_all(prog, out_dir, ...)` | `dict` | Schedule PNG + amplitude CSV/NPZ + edge matrices + table PNGs |
+| `plot_pulse_schedule(prog, ...)` | `ax` or `(ax, ax_amp)` | Draw the schedule (and optional amplitude panel) |
+| `visualize_from_pickle(path, ...)` | `(prog, ax)` | Load a compiled-program pickle and plot |
+| `extract_schedule(prog)` | `Schedule` | Sweep-aware, microsecond schedule model |
+| `export_amplitude_traces_csv(prog, csv, t0, t1, ...)` | `str` | Amplitude samples to CSV (+ `.npz`) |
+| `export_edge_matrices_csv(prog, prefix, t0, t1, ...)` | `(str, str)` | State and amplitude edge matrices |
+| `csv_to_table_png(csv, png, title)` | `None` | Render a CSV as a highlighted table |
 | `save_soccfg_to_json(soc, path)` | `None` | Save RFSoC config for offline use |
 | `load_soccfg_from_json(path)` | `QickConfig` | Load config (requires `qick`) |
-| `visualize_from_pickle(pickle_path, ...)` | `(prog, ax)` | Load pickle and plot |
 
-See docstrings in `qcvt.pulse_visualizer` for full arguments.
+The package is organized into `qcvt.model` (schedule extraction), `qcvt.plotting`,
+`qcvt.export` and `qcvt.io`; `qcvt.pulse_visualizer` remains as a compatibility
+shim for older imports.
+
+## Notes and limitations
+
+- The program must be compiled (an `AveragerProgramV2` compiles on construction).
+- A single iteration of each loop is drawn; swept values are annotated and their
+  ranges shown rather than unrolled.
+- Extraction is best-effort: an unrecognized macro is skipped with a warning
+  rather than aborting the whole schedule.
 
 ## License
 
