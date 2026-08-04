@@ -72,6 +72,31 @@ def test_param_helpers():
     assert (lo, hi, swept) == (1.0, 5.0, True)
 
 
+def test_representative_gain_and_band():
+    """QICK gains are signed: sweeps like -0.6..0.6 or -0.6..0 must not
+    render/export near zero, and the amplitude band must reach 0 when the
+    sweep crosses zero."""
+    from qcvt.model import PulseEvent, gain_band, representative_gain
+
+    def ev(g, gmin, gmax):
+        return PulseEvent(ch=0, name="p", kind="gen", t_start=0.0, length=1.0,
+                          gain=g, gain_min=gmin, gain_max=gmax)
+
+    # constant gain (incl. negative)
+    assert representative_gain(ev(-0.5, -0.5, -0.5)) == -0.5
+    assert gain_band(ev(-0.5, -0.5, -0.5)) == (0.5, 0.5)
+    # positive sweep (power Rabi 0..1)
+    assert representative_gain(ev(0.0, 0.0, 1.0)) == 1.0
+    assert gain_band(ev(0.0, 0.0, 1.0)) == (0.0, 1.0)
+    # sign-crossing sweep (kerrcat -0.6..0.6): largest |endpoint|, band reaches 0
+    assert abs(representative_gain(ev(-0.6, -0.6, 0.6))) == pytest.approx(0.6)
+    assert gain_band(ev(-0.6, -0.6, 0.6)) == (0.0, pytest.approx(0.6))
+    # negative-only sweep: must pick -0.6, not the near-zero max
+    assert representative_gain(ev(-0.6, -0.6, 0.0)) == -0.6
+    assert gain_band(ev(-0.6, -0.6, 0.0)) == (0.0, pytest.approx(0.6))
+    assert gain_band(ev(-0.6, -0.6, -0.2)) == (pytest.approx(0.2), pytest.approx(0.6))
+
+
 # --------------------------------------------------------------------------- #
 # Golden tests against a real (offline-built) program
 # --------------------------------------------------------------------------- #
@@ -265,12 +290,22 @@ def test_multi_timescale_window_and_insets():
     assert short.length < 0.2
     assert long.length == pytest.approx(50.0, abs=0.1)
 
-    # Full window + forced inset must not crash.
+    # Full window + forced inset must not crash, and pulse labels must not
+    # blow up the tight bbox (long pulses labelled at off-window midpoints
+    # once produced ~40000 px wide PNGs).
     ax, ax_amp = plot_pulse_schedule(prog, show_amplitude=True, insets=True)
     assert ax.get_xlim()[1] > 40
+    fig = ax.figure
+    fig.canvas.draw()
+    bbox = fig.get_tightbbox(fig.canvas.get_renderer())
+    assert bbox.width < 3 * fig.get_size_inches()[0], "tight bbox exploded"
     plt.close("all")
 
-    # Zoomed window around the short pulse.
+    # Zoomed window around the short pulse: same bbox sanity check.
     ax = plot_pulse_schedule(prog, show_amplitude=False, t0_us=0.0, max_time_us=1.0, insets=False)
     assert ax.get_xlim() == pytest.approx((0.0, 1.0))
+    fig = ax.figure
+    fig.canvas.draw()
+    bbox = fig.get_tightbbox(fig.canvas.get_renderer())
+    assert bbox.width < 3 * fig.get_size_inches()[0], "tight bbox exploded"
     plt.close("all")

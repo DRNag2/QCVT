@@ -130,10 +130,33 @@ def representative_gain(event: "PulseEvent") -> float:
     """A single gain value suitable for drawing/exporting one pulse.
 
     For a swept gain the nominal value is the sweep *start*, which is 0.0 for a
-    power Rabi — that would render the pulse under test as a flat zero line. Use
-    the sweep maximum instead so the pulse is visible at its largest extent.
+    power Rabi — that would render the pulse under test as a flat zero line.
+    Gains are signed in QICK (sweeps like -0.6..0.6 are common), so use the
+    sweep endpoint with the largest magnitude: the pulse is drawn/exported at
+    its largest amplitude extent.
     """
-    return event.gain_max if event.gain_swept else event.gain
+    if not event.gain_swept:
+        return event.gain
+    if abs(event.gain_max) >= abs(event.gain_min):
+        return event.gain_max
+    return event.gain_min
+
+
+def gain_band(event: "PulseEvent") -> Tuple[float, float]:
+    """``(lo, hi)`` bounds of ``|gain|`` over a pulse's sweep.
+
+    Used to draw the amplitude min→max band.  A sweep whose sign changes
+    (e.g. -0.6..0.6) passes through zero amplitude, so ``lo`` is 0.
+    """
+    if not event.gain_swept:
+        g = abs(event.gain)
+        return g, g
+    hi = max(abs(event.gain_min), abs(event.gain_max))
+    if event.gain_min < 0.0 < event.gain_max:
+        lo = 0.0
+    else:
+        lo = min(abs(event.gain_min), abs(event.gain_max))
+    return lo, hi
 
 
 @dataclass

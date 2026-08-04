@@ -26,7 +26,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
-from .model import PulseEvent, Schedule, amplitude_trace, extract_schedule
+from .model import PulseEvent, Schedule, amplitude_trace, extract_schedule, gain_band
 
 
 _GEN_HEIGHT = 0.62
@@ -304,6 +304,10 @@ def _draw_schedule_bars(
             continue
         color = colors.get(e.ch, "C0")
         draw_len = draw_lengths.get(id(e), e.length)
+        t_end = e.t_start + max(draw_len, 0.0)
+        # Skip pulses that do not intersect the viewing window.
+        if t_end < t0_us or e.t_start > end_us:
+            continue
 
         if e.time_swept:
             ax.barh(y, (e.t_max + draw_len) - e.t_min, left=e.t_min, height=_GEN_HEIGHT,
@@ -317,24 +321,33 @@ def _draw_schedule_bars(
                 hatch="////" if e.periodic else None,
                 alpha=0.55 if e.periodic else 1.0)
 
-        if label_pulses and draw_len >= _SHORT_FRAC * window_us:
+        # Label at the midpoint of the *visible* segment so a zoomed window
+        # does not place text far outside xlim (which blows up bbox_inches=tight).
+        vis_lo = max(e.t_start, t0_us)
+        vis_hi = min(t_end, end_us)
+        vis_len = max(vis_hi - vis_lo, 0.0)
+        if label_pulses and vis_len >= _SHORT_FRAC * window_us:
             label = e.name
             if e.swept_params:
                 label += f"\n[sweep: {', '.join(e.swept_params)}]"
             if e.style and e.style not in ("const",):
                 label += f"\n({e.style})"
-            center = e.t_start + max(draw_len, 0.0) / 2.0
-            wide_enough = max(draw_len, 0.0) > 0.08 * window_us
+            center = 0.5 * (vis_lo + vis_hi)
+            wide_enough = vis_len > 0.08 * window_us
             if wide_enough:
                 ax.text(center, y, label, ha="center", va="center",
-                        fontsize=7, color="white", zorder=3, fontweight="bold")
+                        fontsize=7, color="white", zorder=3, fontweight="bold",
+                        clip_on=True)
             else:
-                ax.text(e.t_start, y + _GEN_HEIGHT / 2 + 0.02, label, ha="left",
-                        va="bottom", fontsize=6.5, color=color, zorder=3)
+                ax.text(vis_lo, y + _GEN_HEIGHT / 2 + 0.02, label, ha="left",
+                        va="bottom", fontsize=6.5, color=color, zorder=3,
+                        clip_on=True)
 
     for e in sched.adc_events:
         y = y_pos.get(("adc", e.ch))
         if y is None:
+            continue
+        if e.t_end < t0_us or e.t_start > end_us:
             continue
         ax.barh(y, max(e.length, 0.01), left=e.t_start, height=_ADC_HEIGHT,
                 color=_ADC_COLOR, alpha=0.7, edgecolor="black", linewidth=0.8, zorder=2)
@@ -396,10 +409,15 @@ def _add_zoom_inset(
                    color=color, edgecolor="black", linewidth=0.5, zorder=2,
                    hatch="////" if e.periodic else None,
                    alpha=0.55 if e.periodic else 1.0)
-        inset.text(e.t_start + max(draw_len, 0.0) / 2.0, y,
+        # Center the label on the segment visible inside the inset window, not
+        # the whole pulse (whose midpoint may lie far outside and blow up the
+        # figure bbox on save).
+        vis_lo = max(e.t_start, z0)
+        vis_hi = min(e.t_start + max(draw_len, 0.0), z1)
+        inset.text(0.5 * (vis_lo + vis_hi), y,
                    f"{e.name}\n{_format_duration(e.length)}",
                    ha="center", va="center", fontsize=6, color="white",
-                   fontweight="bold", zorder=3)
+                   fontweight="bold", zorder=3, clip_on=True)
     for e in sched.adc_events:
         if e.t_end < z0 or e.t_start > z1:
             continue
@@ -438,10 +456,13 @@ def _draw_amplitude_panel(ax_amp, sched: Schedule, colors, draw_lengths,
         legend_label = label if e.ch not in seen else "_nolegend_"
 
         if e.gain_swept:
+            # Band spans |gain| over the sweep; a sign-crossing sweep (e.g.
+            # -0.6..0.6) reaches zero amplitude, so the band starts at 0.
+            band_lo, band_hi = gain_band(e)
             t_lo, a_lo = amplitude_trace(prog, e, length_us=draw_len,
-                                         dac_units=dac_units, gain_override=e.gain_min)
+                                         dac_units=dac_units, gain_override=band_lo)
             t_hi, a_hi = amplitude_trace(prog, e, length_us=draw_len,
-                                         dac_units=dac_units, gain_override=e.gain_max)
+                                         dac_units=dac_units, gain_override=band_hi)
             if t_lo is not None and t_hi is not None and np.array_equal(t_lo, t_hi):
                 ax_amp.fill_between(t_lo, np.abs(a_lo), np.abs(a_hi), color=color,
                                     alpha=0.3, linewidth=0, label="_nolegend_")
