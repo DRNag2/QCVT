@@ -9,7 +9,7 @@ These functions cover the two offline entry points:
   live RFSoC connection.
 
 :func:`visualize_all` extracts the schedule once and produces every artifact
-(schedule PNG, amplitude CSV/NPZ, edge matrices and their table PNGs).
+(schedule PNG, state edge matrix and its table PNG).
 """
 
 from __future__ import annotations
@@ -20,8 +20,7 @@ from typing import List, Optional, Tuple
 
 from .export import (
     csv_to_table_png,
-    export_amplitude_traces_csv,
-    export_edge_matrices_csv,
+    export_edge_matrix_csv,
 )
 from .model import extract_schedule
 from .plotting import plot_pulse_schedule
@@ -151,8 +150,8 @@ def review_schedule(
         If ``True``, prompt the user with ``Proceed with acquisition? [y/N]``.
         Returns ``False`` if they decline (caller should abort ``prog.acquire``).
     full_export : bool
-        If ``True`` and ``save_dir`` is set, also write amplitude CSVs and edge
-        matrices via :func:`visualize_all`.
+        If ``True`` and ``save_dir`` is set, also write the state edge matrix
+        via :func:`visualize_all`.
     time_origin : str
         ``"program"`` (absolute timeline, default) or ``"body"`` (t = 0 at the
         start of the loop body).  Affects plots only; exports stay absolute.
@@ -257,11 +256,10 @@ def visualize_all(
 ) -> dict:
     """Generate every visualization artifact for ``prog`` in ``out_dir``.
 
-    Returns a dict of output paths (values are ``None`` when a step is skipped,
-    e.g. no generator pulses for the amplitude export).
+    Returns a dict of output paths (values are ``None`` when a step is skipped).
 
     ``time_origin="body"`` shifts the schedule *plot* so t = 0 is the start of
-    the loop body; the CSV/NPZ exports always stay on the absolute timeline.
+    the loop body; the edge-matrix export always stays on the absolute timeline.
     """
     import matplotlib.pyplot as plt
 
@@ -290,34 +288,18 @@ def visualize_all(
     plt.close(ax.figure)
     results["schedule_png"] = schedule_path
 
-    amplitudes_csv = os.path.join(out_dir, "amplitudes.csv")
-    try:
-        export_amplitude_traces_csv(
-            prog, amplitudes_csv, t0_us=t0_us, t1_us=t1_us,
-            amplitude_units=amplitude_units, schedule=sched,
-        )
-        results["amplitudes_csv"] = amplitudes_csv
-        results["amplitudes_npz"] = amplitudes_csv.rsplit(".", 1)[0] + ".npz"
-    except RuntimeError:
-        results["amplitudes_csv"] = None
-        results["amplitudes_npz"] = None
-
     edges_prefix = os.path.join(out_dir, "edges")
     try:
-        state_csv, amp_csv = export_edge_matrices_csv(
+        state_csv = export_edge_matrix_csv(
             prog, out_prefix=edges_prefix, t0_us=t0_us, t1_us=t1_us,
-            rows=rows, amplitude_units=amplitude_units, schedule=sched,
+            rows=rows, schedule=sched,
         )
         results["edges_state_csv"] = state_csv
-        results["edges_amp_csv"] = amp_csv
         state_png = edges_prefix + "_state.png"
-        amp_png = edges_prefix + "_amp.png"
         csv_to_table_png(state_csv, state_png, "State edge summary")
-        csv_to_table_png(amp_csv, amp_png, "Amplitude edge summary")
         results["edges_state_png"] = state_png
-        results["edges_amp_png"] = amp_png
     except RuntimeError:
-        for k in ("edges_state_csv", "edges_amp_csv", "edges_state_png", "edges_amp_png"):
-            results[k] = None
+        results["edges_state_csv"] = None
+        results["edges_state_png"] = None
 
     return results

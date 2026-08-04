@@ -9,8 +9,7 @@ from .model import (
 from .plotting import plot_pulse_schedule, show_schedule
 from .export import (
     csv_to_table_png,
-    export_amplitude_traces_csv,
-    export_edge_matrices_csv,
+    export_edge_matrix_csv,
 )
 from .io import (
     load_program_pickle,
@@ -29,8 +28,7 @@ __all__ = [
     "plot_pulse_schedule",
     "show_schedule",
     "review_schedule",
-    "export_amplitude_traces_csv",
-    "export_edge_matrices_csv",
+    "export_edge_matrix_csv",
     "csv_to_table_png",
     "save_soccfg_to_json",
     "load_soccfg_from_json",

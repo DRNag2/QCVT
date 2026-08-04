@@ -31,8 +31,8 @@ def test_public_api():
     for name in [
         "plot_pulse_schedule", "show_schedule", "visualize_all",
         "visualize_from_pickle", "extract_schedule", "Schedule", "PulseEvent",
-        "export_edge_matrices_csv", "export_amplitude_traces_csv",
-        "csv_to_table_png", "save_soccfg_to_json", "load_soccfg_from_json",
+        "export_edge_matrix_csv", "csv_to_table_png",
+        "save_soccfg_to_json", "load_soccfg_from_json",
         "review_schedule",
     ]:
         assert hasattr(qcvt, name), name
@@ -170,29 +170,29 @@ def test_visualize_all_writes_all_outputs(tmp_path):
 
     prog = _build_spec_program()
     out = visualize_all(prog, str(tmp_path), title="spec", show_amplitude=True)
-    for key in ("schedule_png", "amplitudes_csv", "amplitudes_npz",
-                "edges_state_csv", "edges_amp_csv", "edges_state_png", "edges_amp_png"):
+    for key in ("schedule_png", "edges_state_csv", "edges_state_png"):
         assert out[key] and os.path.isfile(out[key]), key
 
 
 @needs_qick
-def test_edge_matrix_amplitude_values(tmp_path):
+def test_edge_matrix_state_values(tmp_path):
     import csv
 
-    from qcvt import export_edge_matrices_csv
+    from qcvt import export_edge_matrix_csv
 
     prog = _build_spec_program()
-    state_csv, amp_csv = export_edge_matrices_csv(
+    state_csv = export_edge_matrix_csv(
         prog, out_prefix=str(tmp_path / "edges"), t0_us=0.0, t1_us=None,
     )
-    with open(amp_csv) as f:
+    with open(state_csv) as f:
         rows = list(csv.reader(f))
     labels = [r[0] for r in rows[1:]]
     assert any("gen 2" in lbl for lbl in labels)
-    # readout const gain 0.5 -> 0.5 * maxv should appear somewhere in its row.
-    readout_row = next(r for r in rows[1:] if r[0].startswith("gen 6"))
-    vals = [float(x) for x in readout_row[1:] if x not in ("", "0")]
-    assert vals and max(vals) == pytest.approx(0.5 * 32766, rel=0.02)
+    assert any("gen 6" in lbl for lbl in labels)
+    # Each generator row should be on for at least one timestamp.
+    for row in rows[1:]:
+        if row[0].startswith("gen "):
+            assert "on" in row[1:]
 
 
 def _build_flat_top_program():

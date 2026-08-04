@@ -1,15 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-CSV / NPZ / table exports derived from a QICK pulse :class:`~qcvt.model.Schedule`.
+CSV / table exports derived from a QICK pulse :class:`~qcvt.model.Schedule`.
 
-Two kinds of export are provided:
+:func:`export_edge_matrix_csv` writes a compact on/off "edge matrix": one row
+per lane, one column per timestamp at which some lane's state changes.
 
-* :func:`export_amplitude_traces_csv` -- amplitude vs. time sampled exactly at
-  pulse edges (plus an NPZ with the raw arrays).
-* :func:`export_edge_matrices_csv` -- compact "edge matrices": one row per lane,
-  one column per timestamp at which some lane's on/off state changes.
-
-:func:`csv_to_table_png` renders any of these CSVs as a highlighted table image.
+:func:`csv_to_table_png` renders that CSV as a highlighted table image.
 """
 
 from __future__ import annotations
@@ -17,9 +13,7 @@ from __future__ import annotations
 import csv as _csv
 from typing import List, Optional, Tuple
 
-import numpy as np
-
-from .model import Schedule, amplitude_trace, extract_schedule
+from .model import Schedule, extract_schedule
 
 
 def _as_schedule(prog_or_schedule) -> Schedule:
@@ -28,8 +22,8 @@ def _as_schedule(prog_or_schedule) -> Schedule:
     return extract_schedule(prog_or_schedule)
 
 
-def _gen_intervals(sched: Schedule, window_end_us: float, dac_units: bool):
-    """Return ``{ch: [(t0, t1, amp), ...]}`` for generator channels."""
+def _gen_intervals(sched: Schedule, window_end_us: float):
+    """Return ``{ch: [(t0, t1), ...]}`` for generator channels."""
     draw_lengths = sched.draw_lengths(window_end_us)
     suppressed = sched.suppressed_events()
     out = {}
@@ -37,110 +31,44 @@ def _gen_intervals(sched: Schedule, window_end_us: float, dac_units: bool):
         if id(e) in suppressed:
             continue
         draw_len = draw_lengths.get(id(e), e.length)
-        t_arr, amp_arr = amplitude_trace(sched.prog, e, length_us=draw_len, dac_units=dac_units)
-        if t_arr is None or amp_arr is None:
+        if draw_len <= 0.0:
             continue
-        amp = float(np.nanmax(np.abs(amp_arr))) if amp_arr.size else 0.0
-        if amp == 0.0:
-            continue
-        out.setdefault(e.ch, []).append((float(e.t_start), float(e.t_start + draw_len), amp))
+        out.setdefault(e.ch, []).append((float(e.t_start), float(e.t_start + draw_len)))
     return out
 
 
 def _adc_intervals(sched: Schedule):
     out = {}
     for e in sched.adc_events:
-        out.setdefault(e.ch, []).append((float(e.t_start), float(e.t_end), 1.0))
+        out.setdefault(e.ch, []).append((float(e.t_start), float(e.t_end)))
     return out
 
 
-def export_amplitude_traces_csv(
-    prog,
-    csv_path: str,
-    t0_us: float,
-    t1_us: Optional[float],
-    amplitude_units: str = "dac",
-    schedule: Optional[Schedule] = None,
-) -> str:
-    """Export per-channel amplitude vs. time to CSV (and a companion ``.npz``).
-
-    Amplitudes are sampled on the union of all pulse edge times in
-    ``[t0_us, t1_us]`` so piecewise-constant pulses are represented exactly.
-    Returns the CSV path.
-    """
-    if amplitude_units not in ("dac", "norm"):
-        raise ValueError("amplitude_units must be 'dac' or 'norm'")
-
-    sched = schedule if schedule is not None else _as_schedule(prog)
-    if not sched:
-        raise RuntimeError("No schedule could be extracted from this program.")
-    if t1_us is None:
-        t1_us = sched.end_us()
-
-    dac_units = amplitude_units == "dac"
-    intervals = _gen_intervals(sched, t1_us, dac_units)
-    gen_chs = sorted(intervals)
-    if not gen_chs:
-        raise RuntimeError("No generator pulses found in schedule.")
-
-    edge_times = {float(t0_us), float(t1_us)}
-    for segs in intervals.values():
-        for a, b, _amp in segs:
-            if t0_us <= a <= t1_us:
-                edge_times.add(float(a))
-            if t0_us <= b <= t1_us:
-                edge_times.add(float(b))
-    times = np.array(sorted(edge_times), dtype=float)
-
-    amp_mat = np.zeros((times.size, len(gen_chs)), dtype=float)
-    for j, ch in enumerate(gen_chs):
-        col = np.zeros(times.size, dtype=float)
-        for t0, t1, amp in intervals[ch]:
-            mask = (times >= t0) & (times < t1)
-            col[mask] = np.maximum(col[mask], amp)
-        amp_mat[:, j] = col
-
-    with open(csv_path, "w", newline="") as f:
-        w = _csv.writer(f)
-        w.writerow(["time_us"] + [f"gen_{ch}" for ch in gen_chs])
-        for i, t in enumerate(times):
-            w.writerow([f"{t:.9f}"] + [f"{amp_mat[i, j]:.9f}" for j in range(len(gen_chs))])
-
-    npz_path = csv_path.rsplit(".", 1)[0] + ".npz"
-    np.savez(npz_path, time_us=times, gen_chs=np.array(gen_chs, dtype=int), amp=amp_mat)
-    return csv_path
-
-
-def export_edge_matrices_csv(
+def export_edge_matrix_csv(
     prog,
     out_prefix: str,
     t0_us: float,
     t1_us: Optional[float],
     rows: Optional[List[Tuple[str, str, int]]] = None,
-    amplitude_units: str = "dac",
     schedule: Optional[Schedule] = None,
-) -> Tuple[str, str]:
-    """Export state and amplitude "edge matrices" as two CSVs.
-
-    * ``{out_prefix}_state.csv`` -- entries are ``on`` / ``off``.
-    * ``{out_prefix}_amp.csv``   -- entries are the amplitude (0 when off).
+) -> str:
+    """Export an on/off edge matrix as ``{out_prefix}_state.csv``.
 
     Columns are timestamps (ns) at which at least one lane changes state.
+    Entries are ``on`` / ``off``.
 
     ``rows`` is a list of ``(label, kind, ch)`` with ``kind`` in ``{"gen","adc"}``;
     when ``None`` it defaults to every generator then every readout channel.
-    """
-    if amplitude_units not in ("dac", "norm"):
-        raise ValueError("amplitude_units must be 'dac' or 'norm'")
 
+    Returns the CSV path.
+    """
     sched = schedule if schedule is not None else _as_schedule(prog)
     if not sched:
         raise RuntimeError("No schedule could be extracted from this program.")
     if t1_us is None:
         t1_us = sched.end_us()
 
-    dac_units = amplitude_units == "dac"
-    gen_intervals = _gen_intervals(sched, t1_us, dac_units)
+    gen_intervals = _gen_intervals(sched, t1_us)
     adc_intervals = _adc_intervals(sched)
     intervals = {("gen", ch): segs for ch, segs in gen_intervals.items()}
     intervals.update({("adc", ch): segs for ch, segs in adc_intervals.items()})
@@ -149,17 +77,15 @@ def export_edge_matrices_csv(
         rows = ([(f"gen {ch}", "gen", ch) for ch in sorted(gen_intervals)]
                 + [(f"ro {ch}", "adc", ch) for ch in sorted(adc_intervals)])
 
-    def state_amp_at(kind: str, ch: int, t: float) -> Tuple[bool, float]:
-        on, amp = False, 0.0
-        for t0, t1, a in intervals.get((kind, ch), []):
+    def on_at(kind: str, ch: int, t: float) -> bool:
+        for t0, t1 in intervals.get((kind, ch), []):
             if t0 <= t < t1:
-                on = True
-                amp = max(amp, float(a))
-        return on, amp
+                return True
+        return False
 
     edge_times = {float(t0_us), float(t1_us)}
     for segs in intervals.values():
-        for a, b, _amp in segs:
+        for a, b in segs:
             if t0_us <= a <= t1_us:
                 edge_times.add(float(a))
             if t0_us <= b <= t1_us:
@@ -174,33 +100,26 @@ def export_edge_matrices_csv(
             continue
         prev = columns[-1]
         changed = any(
-            state_amp_at(kind, ch, prev)[0] != state_amp_at(kind, ch, t)[0]
+            on_at(kind, ch, prev) != on_at(kind, ch, t)
             for _label, kind, ch in rows
         )
         if changed:
             columns.append(t)
 
-    state_rows, amp_rows = [], []
+    state_rows = []
     for label, kind, ch in rows:
-        unit = "" if kind == "adc" else (" (DAC units)" if dac_units else " (norm)")
         srow = [label]
-        arow = [label + (" (ADC gate)" if kind == "adc" else unit)]
         for col in columns:
-            on, amp = state_amp_at(kind, int(ch), float(col))
-            srow.append("on" if on else "off")
-            arow.append(f"{amp:.6g}" if on else "0")
+            srow.append("on" if on_at(kind, int(ch), float(col)) else "off")
         state_rows.append(srow)
-        amp_rows.append(arow)
 
     header = ["timestamp (ns)"] + _unique_time_labels([c * 1_000.0 for c in columns])
     state_path = f"{out_prefix}_state.csv"
-    amp_path = f"{out_prefix}_amp.csv"
-    for path, data in ((state_path, state_rows), (amp_path, amp_rows)):
-        with open(path, "w", newline="") as f:
-            w = _csv.writer(f)
-            w.writerow(header)
-            w.writerows(data)
-    return state_path, amp_path
+    with open(state_path, "w", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(header)
+        w.writerows(state_rows)
+    return state_path
 
 
 def _unique_time_labels(values_ns) -> List[str]:
@@ -224,7 +143,7 @@ def _unique_time_labels(values_ns) -> List[str]:
 def csv_to_table_png(csv_path: str, png_path: str, title: str = "") -> None:
     """Render a CSV (e.g. an edge matrix) as a PNG table.
 
-    Cells that are ``on`` or have a numeric value > 0 are highlighted.
+    Cells that are ``on`` are highlighted.
     """
     import pandas as pd
     import matplotlib.pyplot as plt
@@ -270,20 +189,7 @@ def csv_to_table_png(csv_path: str, png_path: str, title: str = "") -> None:
             val = df.iat[r - 1, c]
         except Exception:
             continue
-        on = False
-        if isinstance(val, str):
-            v = val.strip().lower()
-            on = v == "on"
-            if not on:
-                try:
-                    on = float(v) > 0
-                except Exception:
-                    on = False
-        else:
-            try:
-                on = float(val) > 0
-            except Exception:
-                on = False
+        on = isinstance(val, str) and val.strip().lower() == "on"
         if on:
             cell.set_facecolor(highlight)
 
