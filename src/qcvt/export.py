@@ -117,7 +117,6 @@ def export_edge_matrices_csv(
     t0_us: float,
     t1_us: Optional[float],
     rows: Optional[List[Tuple[str, str, int]]] = None,
-    gap_threshold_us: Optional[float] = None,  # accepted for backwards compatibility
     amplitude_units: str = "dac",
     schedule: Optional[Schedule] = None,
 ) -> Tuple[str, str]:

@@ -5,14 +5,10 @@ Run with: pytest tests/ -v
 from __future__ import annotations
 
 import os
-import sys
 
 import matplotlib
 
 matplotlib.use("Agg")
-
-# Make the in-tree package importable without an editable install.
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import pytest
 
@@ -74,17 +70,6 @@ def test_param_helpers():
 
     lo, hi, swept = param_range(FakeSweep())
     assert (lo, hi, swept) == (1.0, 5.0, True)
-
-
-def test_legacy_extract_tuple_shim():
-    from qcvt.pulse_visualizer import _extract_schedule
-
-    class Empty:
-        macro_list = []
-        pulses = {}
-        soccfg = None
-
-    assert _extract_schedule(Empty()) == []
 
 
 # --------------------------------------------------------------------------- #

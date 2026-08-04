@@ -31,7 +31,7 @@ dependencies = [
 
 [project.optional-dependencies]
 qick = ["qick"]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "qick"]
 
 [project.urls]
 Homepage = "https://github.com/your-org/QCVT"
@@ -43,3 +43,7 @@ qcvt = "qcvt.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

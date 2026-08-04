@@ -18,17 +18,27 @@ lets every channel share one correct time axis.
 Absolute timing: pulses are scheduled at a *local* time ``t`` relative to a moving
 reference.  ``Delay`` instructions advance that reference (their stored ``t`` is
 the fully resolved delay, including ``delay_auto``), so we accumulate delays as we
-walk the macro list to recover absolute times.  ``Wait`` stalls the processor but
-does not move the reference, so it is ignored for placement.
+walk the macro list to recover absolute times.  ``Resync`` also advances the
+reference (by at most ``t``; times after it are upper bounds).  ``Wait`` stalls
+the processor but does not move the reference, so it is ignored for placement.
 """
 
 from __future__ import annotations
 
+import re
 import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+
+# Timed macros that legitimately place nothing on the timeline.
+_IGNORED_TIMED_MACROS = frozenset({"Wait", "ConfigReadout"})
+
+# Matches pulse names whose final token is "off"/"turnoff" (e.g. "pump_off",
+# "turn_off", "turnoff", "off") without matching "offset_cal" or
+# "off_resonant_probe", where "off" is not a trailing cleanup token.
+_OFF_PULSE_RE = re.compile(r"(^|[_\-\s])(turn[_\-\s]?)?off$")
 
 
 # --------------------------------------------------------------------------- #
@@ -67,11 +77,6 @@ def param_range(x: Any) -> Tuple[float, float, bool]:
         return lo, hi, swept
     v = param_nominal(x)
     return v, v, False
-
-
-# Backwards-compatible alias used by older code/tests.
-def _scalar_value(x: Any) -> float:
-    return param_nominal(x)
 
 
 def _finite(*vals: float) -> bool:
@@ -121,6 +126,16 @@ class PulseEvent:
         return not np.isclose(self.gain_min, self.gain_max)
 
 
+def representative_gain(event: "PulseEvent") -> float:
+    """A single gain value suitable for drawing/exporting one pulse.
+
+    For a swept gain the nominal value is the sweep *start*, which is 0.0 for a
+    power Rabi — that would render the pulse under test as a flat zero line. Use
+    the sweep maximum instead so the pulse is visible at its largest extent.
+    """
+    return event.gain_max if event.gain_swept else event.gain
+
+
 @dataclass
 class Schedule:
     """A normalized, sweep-aware view of a compiled QICK program."""
@@ -129,6 +144,9 @@ class Schedule:
     soccfg: Any = None
     prog: Any = None
     loop_dict: Dict[str, int] = field(default_factory=dict)
+    # Absolute time (us) at which the loop body starts (first OpenLoop); used
+    # for time_origin="body" plotting.  Everything before it is _initialize().
+    body_start_us: float = 0.0
 
     @property
     def gen_events(self) -> List[PulseEvent]:
@@ -195,7 +213,7 @@ class Schedule:
             if any(e.periodic for e in evs):
                 for e in evs:
                     n = e.name.lower()
-                    if not e.periodic and ("turnoff" in n or "off" in n):
+                    if not e.periodic and _OFF_PULSE_RE.search(n):
                         skip.add(id(e))
         return skip
 
@@ -271,11 +289,26 @@ def extract_schedule(prog: Any) -> Schedule:
 
     # Moving reference offset (us), tracked with its sweep range.
     ref_nom = ref_min = ref_max = 0.0
+    # Per-call warning/bookkeeping state.
+    resync_warned = False
+    unknown_warned: set = set()
+    body_started = False
 
     for macro in macro_list:
         cname = type(macro).__name__
         try:
-            if cname == "Delay":
+            if cname in ("Delay", "Resync"):
+                # Resync advances the reference like Delay (both compile to
+                # TIME inc_ref), but at runtime it applies max(0, t - elapsed),
+                # so the drawn position is an upper bound.  QICK's own timestamp
+                # bookkeeping uses the full t, so we match it.
+                if cname == "Resync" and not resync_warned:
+                    warnings.warn(
+                        "QCVT: program contains Resync; times after it are "
+                        "upper bounds (Resync applies max(0, t - elapsed) at "
+                        "runtime)."
+                    )
+                    resync_warned = True
                 tp = _macro_time_param(macro, "t")
                 if tp is None:
                     continue
@@ -350,7 +383,25 @@ def extract_schedule(prog: Any) -> Schedule:
                         len_min=float(length), len_max=float(length),
                         style="const",
                     ))
-            # Wait / ConfigReadout / loops / register ops: no timeline placement.
+
+            elif cname == "OpenLoop":
+                # Everything before the first loop is _initialize(); the loop
+                # body starts here.  Recorded for time_origin="body" plotting.
+                if not body_started:
+                    sched.body_start_us = ref_nom
+                    body_started = True
+
+            else:
+                # Register ops, loop control and labels carry no timing.
+                # Anything with t_params is a TimedMacro we don't know about —
+                # that's a real gap in the schedule.
+                if hasattr(macro, "t_params") and cname not in _IGNORED_TIMED_MACROS:
+                    if cname not in unknown_warned:
+                        warnings.warn(
+                            f"QCVT: unhandled timed macro {cname!r}; schedule "
+                            f"may be incomplete or misaligned after this point."
+                        )
+                        unknown_warned.add(cname)
         except Exception as exc:  # keep going; a single bad macro shouldn't kill the plot
             warnings.warn(f"QCVT: skipping macro {cname}: {exc}")
 
@@ -416,12 +467,14 @@ def amplitude_trace(prog: Any, event: PulseEvent, length_us: Optional[float] = N
 
     ``scale`` is ``maxv`` (DAC units) when ``dac_units`` else 1.0 (normalized).
     ``length_us`` overrides the pulse length (used for periodic extension of
-    ``const`` pulses).
+    ``const`` pulses).  When ``gain_override`` is ``None``, swept-gain pulses
+    use their sweep maximum (see :func:`representative_gain`) so they are not
+    drawn/exported at zero amplitude.
     """
     if length_us is None:
         length_us = event.length
     t0 = event.t_start
-    gain = abs(event.gain if gain_override is None else gain_override)
+    gain = abs(representative_gain(event) if gain_override is None else gain_override)
     gencfg = _gencfg(prog, event.ch)
     maxv = int(gencfg.get("maxv", 32766))
     scale = maxv if dac_units else 1.0
