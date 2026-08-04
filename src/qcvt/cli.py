@@ -1,7 +1,7 @@
 """Command-line interface for QCVT.
 
-Plot a pulse schedule and export edge matrices from a compiled QICK program
-pickle, without a live RFSoC connection::
+Plot a pulse schedule and export a state edge matrix from a compiled QICK
+program pickle, without a live RFSoC connection::
 
     qcvt --pickle prog.pkl --out-dir ./out --show-amplitude
 """
@@ -14,7 +14,7 @@ import sys
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="QCVT: visualize a compiled QICK asm_v2 program and export edge matrices.",
+        description="QCVT: visualize a compiled QICK asm_v2 program and export a state edge matrix.",
     )
     parser.add_argument("--pickle", required=True, help="Path to compiled program pickle (.pkl)")
     parser.add_argument("--out-dir", default=".", help="Output directory (default: current dir)")
@@ -22,9 +22,9 @@ def main() -> int:
     parser.add_argument("--show-amplitude", action="store_true",
                         help="Add an amplitude vs. time panel to the schedule plot")
     parser.add_argument("--amplitude-units", choices=("dac", "norm"), default="dac",
-                        help="Amplitude units for the panel and exports (default: dac)")
+                        help="Amplitude units for the plot panel (default: dac)")
     parser.add_argument("--no-table-png", action="store_true",
-                        help="Write edge-matrix CSVs only (skip the table PNGs)")
+                        help="Write the edge-matrix CSV only (skip the table PNG)")
     parser.add_argument("--t0", type=float, default=0.0, help="Export window start (µs)")
     parser.add_argument("--t1", type=float, default=None,
                         help="Export window end (µs); default: infer from schedule")
@@ -61,11 +61,10 @@ def main() -> int:
         time_origin=args.time_origin,
     )
     if args.no_table_png:
-        for key in ("edges_state_png", "edges_amp_png"):
-            path = outputs.get(key)
-            if path and os.path.isfile(path):
-                os.remove(path)
-            outputs[key] = None
+        path = outputs.get("edges_state_png")
+        if path and os.path.isfile(path):
+            os.remove(path)
+        outputs["edges_state_png"] = None
 
     for key, path in outputs.items():
         if path:

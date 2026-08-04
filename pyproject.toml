@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "qcvt"
 version = "0.2.1"
-description = "QICK pulse schedule visualizer and edge-matrix exporter for asm_v2 programs"
+description = "QICK pulse schedule visualizer and state edge-matrix exporter for asm_v2 programs"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"

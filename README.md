@@ -44,8 +44,7 @@ from qcvt import visualize_all
 
 outputs = visualize_all(prog, out_dir="output/", title="Qubit spectroscopy",
                         show_amplitude=True)
-# outputs -> {schedule_png, amplitudes_csv, amplitudes_npz,
-#             edges_state_csv, edges_amp_csv, edges_state_png, edges_amp_png}
+# outputs -> {schedule_png, edges_state_csv, edges_state_png}
 ```
 
 ### From a compiled-program pickle (no RFSoC, no qick needed to plot)
@@ -79,8 +78,7 @@ bundled `examples/qick_config.json`).
 qcvt --pickle prog.pkl --out-dir ./out --show-amplitude
 ```
 
-Writes `schedule.png`, `amplitudes.csv/.npz`, `edges_state.csv/.png` and
-`edges_amp.csv/.png`.
+Writes `schedule.png` and `edges_state.csv/.png`.
 
 ## What the plot shows
 
@@ -89,7 +87,7 @@ Writes `schedule.png`, `amplitudes.csv/.npz`, `edges_state.csv/.png` and
 - **Periodic** (CW) pulses hatched and extended to the next event on their channel.
 - **Swept** parameters (time, length, gain) drawn as translucent ranges and tagged
   in the pulse label; an optional amplitude panel shows gain sweeps as a band.
-- **Swept-gain pulses** are drawn and exported at the sweep endpoint with the
+- **Swept-gain pulses** are drawn at the sweep endpoint with the
   **largest magnitude** (QICK gains are signed, so sweeps like -0.6..0.6 work),
   making the pulse visible at its largest extent; the amplitude panel shows the
   full |gain| min→max band, which reaches 0 when a sweep crosses zero.
@@ -98,7 +96,7 @@ Writes `schedule.png`, `amplitudes.csv/.npz`, `edges_state.csv/.png` and
   (CLI: `--time-origin body`) to `plot_pulse_schedule`, `show_schedule`,
   `review_schedule` or `visualize_all` to place t = 0 at the start of the loop
   body — matching how times read inside your `_body()`.  This affects plots
-  only; CSV/NPZ exports always stay on the absolute timeline.
+  only; the state edge-matrix export always stays on the absolute timeline.
 - Correct amplitudes for all QICK pulse styles:
   - ``const`` — rectangle
   - ``arb`` — curved envelopes (gaussian, DRAG, arbitrary I/Q) sampled at the DAC rate
@@ -114,12 +112,11 @@ Writes `schedule.png`, `amplitudes.csv/.npz`, `edges_state.csv/.png` and
 |----------|---------|-------------|
 | `show_schedule(prog, ...)` | `None` | Interactive display (no files saved) |
 | `review_schedule(prog, save_dir=..., ...)` | `bool` | Pre-submit gate: save PNG, optional confirm/abort before acquire |
-| `visualize_all(prog, out_dir, ...)` | `dict` | Schedule PNG + amplitude CSV/NPZ + edge matrices + table PNGs |
+| `visualize_all(prog, out_dir, ...)` | `dict` | Schedule PNG + state edge matrix + table PNG |
 | `plot_pulse_schedule(prog, ...)` | `ax` or `(ax, ax_amp)` | Draw the schedule (and optional amplitude panel) |
 | `visualize_from_pickle(path, ...)` | `(prog, ax)` | Load a compiled-program pickle and plot |
 | `extract_schedule(prog)` | `Schedule` | Sweep-aware, microsecond schedule model |
-| `export_amplitude_traces_csv(prog, csv, t0, t1, ...)` | `str` | Amplitude samples to CSV (+ `.npz`) |
-| `export_edge_matrices_csv(prog, prefix, t0, t1, ...)` | `(str, str)` | State and amplitude edge matrices |
+| `export_edge_matrix_csv(prog, prefix, t0, t1, ...)` | `str` | On/off state edge matrix CSV |
 | `csv_to_table_png(csv, png, title)` | `None` | Render a CSV as a highlighted table |
 | `save_soccfg_to_json(soc, path)` | `None` | Save RFSoC config for offline use |
 | `load_soccfg_from_json(path)` | `QickConfig` | Load config (requires `qick`) |

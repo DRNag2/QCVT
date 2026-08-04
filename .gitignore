@@ -14,7 +14,6 @@ build/
 dist/
 *.egg-info/
 *.egg
-edits.md
 
 # IDE
 .idea/
@@ -31,6 +30,7 @@ htmlcov/
 *.png
 !examples/*.png
 examples/output/
+examples/walkthrough_output/
 qick_config.json
 !examples/qick_config.json
 

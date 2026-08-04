@@ -158,19 +158,20 @@ def test_negative_gain_sweep_amplitude():
     assert np.max(np.abs(amp)) == pytest.approx(0.6 * 32766, rel=0.02)
 
 
-def test_swept_pulse_in_export_csv(sched, tmp_path):
-    """The swept gen 6 pulse must not be silently dropped from the exports."""
+def test_swept_pulse_in_edge_matrix(sched, tmp_path):
+    """The swept gen 6 pulse must appear in the state edge matrix."""
     import csv
 
-    from qcvt.export import export_amplitude_traces_csv
+    from qcvt.export import export_edge_matrix_csv
 
-    path = str(tmp_path / "amplitudes.csv")
-    export_amplitude_traces_csv(sched.prog, path, t0_us=0.0, t1_us=None,
-                                schedule=sched)
+    path = export_edge_matrix_csv(sched.prog, out_prefix=str(tmp_path / "edges"),
+                                  t0_us=0.0, t1_us=None, schedule=sched)
     with open(path, newline="") as f:
-        header = next(csv.reader(f))
-    assert f"gen_{QUBIT_CH}" in header
-    assert f"gen_{RES_CH}" in header
+        rows = list(csv.reader(f))
+    labels = [r[0] for r in rows[1:]]
+    assert f"gen {QUBIT_CH}" in labels
+    qubit_row = next(r for r in rows[1:] if r[0] == f"gen {QUBIT_CH}")
+    assert "on" in qubit_row[1:]
 
 
 def test_unhandled_timed_macro_warns_once():
@@ -224,7 +225,7 @@ def test_off_suppression_names():
 
 
 def test_body_time_origin(sched):
-    """body_start_us puts the first _body() pulse at t = 0 (Task 5)."""
+    """body_start_us puts the first _body() pulse at t = 0."""
     q = _one(sched, "qubit")
     assert sched.body_start_us > 0.5  # initial_delay + explicit delay(1.0)
     assert q.t_start - sched.body_start_us == pytest.approx(0.0, abs=TOL)
