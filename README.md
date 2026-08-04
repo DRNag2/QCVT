@@ -89,9 +89,10 @@ Writes `schedule.png`, `amplitudes.csv/.npz`, `edges_state.csv/.png` and
 - **Periodic** (CW) pulses hatched and extended to the next event on their channel.
 - **Swept** parameters (time, length, gain) drawn as translucent ranges and tagged
   in the pulse label; an optional amplitude panel shows gain sweeps as a band.
-- **Swept-gain pulses** are drawn and exported at their **sweep maximum** (so a
-  power-Rabi pulse sweeping gain from 0 is visible at its largest extent); the
-  amplitude panel additionally shows the full min→max band.
+- **Swept-gain pulses** are drawn and exported at the sweep endpoint with the
+  **largest magnitude** (QICK gains are signed, so sweeps like -0.6..0.6 work),
+  making the pulse visible at its largest extent; the amplitude panel shows the
+  full |gain| min→max band, which reaches 0 when a sweep crosses zero.
 - **Time origin**: by default the axis is the absolute program timeline (which
   includes any initial delay from `_initialize()`).  Pass `time_origin="body"`
   (CLI: `--time-origin body`) to `plot_pulse_schedule`, `show_schedule`,

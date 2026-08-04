@@ -128,6 +128,7 @@ def review_schedule(
     confirm: bool = False,
     full_export: bool = False,
     time_origin: str = "program",
+    insets: Optional[bool] = None,
 ) -> bool:
     """Pre-submission gate: visualize the schedule before sending it to the RFSoC.
 
@@ -155,6 +156,11 @@ def review_schedule(
     time_origin : str
         ``"program"`` (absolute timeline, default) or ``"body"`` (t = 0 at the
         start of the loop body).  Affects plots only; exports stay absolute.
+    t0_us, max_time_us :
+        Optional viewing window (µs). Use to zoom on short pulses next to long ones.
+    insets : bool or None
+        Zoom inset around short pulses. ``None`` = auto when length dynamic range
+        is large; ``True``/``False`` force on/off.
 
     Returns
     -------
@@ -179,6 +185,7 @@ def review_schedule(
             physical_port_labels=physical_port_labels,
             show=False,
             time_origin=time_origin,
+            insets=insets,
         )
         schedule_path = os.path.join(save_dir, "schedule.png")
         print(f"QCVT review saved: {schedule_path}")
@@ -193,6 +200,7 @@ def review_schedule(
                 t0_us=t0_us,
                 max_time_us=max_time_us,
                 time_origin=time_origin,
+                insets=insets,
             )
             plt.show()
     else:
@@ -206,6 +214,7 @@ def review_schedule(
             t0_us=t0_us,
             max_time_us=max_time_us,
             time_origin=time_origin,
+            insets=insets,
         )
         ax = result[0] if isinstance(result, tuple) else result
         if save_dir is not None:

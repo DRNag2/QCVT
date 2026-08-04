@@ -136,6 +136,28 @@ def test_resync_advances_reference():
     assert b.t_start - a.t_start == pytest.approx(5.0, abs=TOL)
 
 
+def test_negative_gain_sweep_amplitude():
+    """Signed gain sweeps (kerrcat sweeps -0.6..0.6) must render at the
+    largest |gain|, not at the sweep maximum (≈0 for a -0.6..0 sweep)."""
+    soccfg = QickConfig(CFG)
+
+    class NegSweep(AveragerProgramV2):
+        def _initialize(self, cfg):
+            self.declare_gen(ch=6, nqz=1)
+            self.add_loop("gainloop", 11)
+            self.add_pulse(ch=6, name="drive", style="const", length=1.0,
+                           freq=1000.0, phase=0,
+                           gain=QickSweep1D("gainloop", -0.6, 0.0))
+
+        def _body(self, cfg):
+            self.pulse(ch=6, name="drive", t=0)
+
+    s = extract_schedule(NegSweep(soccfg, reps=1, final_delay=1.0, cfg={}))
+    d = _one(s, "drive")
+    _, amp = amplitude_trace(s.prog, d)
+    assert np.max(np.abs(amp)) == pytest.approx(0.6 * 32766, rel=0.02)
+
+
 def test_swept_pulse_in_export_csv(sched, tmp_path):
     """The swept gen 6 pulse must not be silently dropped from the exports."""
     import csv

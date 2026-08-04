@@ -1,8 +1,12 @@
 # QCVT — implementation spec
 
 > **Status: all tasks below are implemented and verified** (2026-08-03).
-> `pytest tests/ -v` → 22 passed, 0 xfailed. This document is kept as the
-> record of what was found and why each change was made.
+> This document is kept as the record of what was found and why each change
+> was made. Post-implementation hardening: `representative_gain` picks the
+> sweep endpoint with the largest |gain| (not `gain_max`, which is ≈0 for a
+> negative-going sweep like -0.6..0); the amplitude band spans |gain| min→max
+> (0 when the sweep crosses zero); and pulse labels are placed on the segment
+> visible inside the window/inset so zoomed figures don't blow up on save.
 
 Findings from an offline audit against `qick==0.2.422`, using `examples/qick_config.json`
 and a reconstruction of the Power_rabi experiment from the original bug report.
