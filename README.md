@@ -89,6 +89,15 @@ Writes `schedule.png`, `amplitudes.csv/.npz`, `edges_state.csv/.png` and
 - **Periodic** (CW) pulses hatched and extended to the next event on their channel.
 - **Swept** parameters (time, length, gain) drawn as translucent ranges and tagged
   in the pulse label; an optional amplitude panel shows gain sweeps as a band.
+- **Swept-gain pulses** are drawn and exported at their **sweep maximum** (so a
+  power-Rabi pulse sweeping gain from 0 is visible at its largest extent); the
+  amplitude panel additionally shows the full min→max band.
+- **Time origin**: by default the axis is the absolute program timeline (which
+  includes any initial delay from `_initialize()`).  Pass `time_origin="body"`
+  (CLI: `--time-origin body`) to `plot_pulse_schedule`, `show_schedule`,
+  `review_schedule` or `visualize_all` to place t = 0 at the start of the loop
+  body — matching how times read inside your `_body()`.  This affects plots
+  only; CSV/NPZ exports always stay on the absolute timeline.
 - Correct amplitudes for all QICK pulse styles:
   - ``const`` — rectangle
   - ``arb`` — curved envelopes (gaussian, DRAG, arbitrary I/Q) sampled at the DAC rate
@@ -115,16 +124,36 @@ Writes `schedule.png`, `amplitudes.csv/.npz`, `edges_state.csv/.png` and
 | `load_soccfg_from_json(path)` | `QickConfig` | Load config (requires `qick`) |
 
 The package is organized into `qcvt.model` (schedule extraction), `qcvt.plotting`,
-`qcvt.export` and `qcvt.io`; `qcvt.pulse_visualizer` remains as a compatibility
-shim for older imports.
+`qcvt.export` and `qcvt.io`.
 
 ## Notes and limitations
 
 - The program must be compiled (an `AveragerProgramV2` compiles on construction).
 - A single iteration of each loop is drawn; swept values are annotated and their
   ranges shown rather than unrolled.
-- Extraction is best-effort: an unrecognized macro is skipped with a warning
-  rather than aborting the whole schedule.
+- Extraction is best-effort: a macro that fails to parse is skipped with a
+  warning rather than aborting the whole schedule.  Unhandled **timed** macros
+  (anything with `t_params` that QCVT does not recognize) emit a warning, since
+  they may shift or omit events; untimed macros (register ops, loop control,
+  labels) are ignored by design.
+- `resync()` advances the time reference by *at most* its argument (at runtime
+  it applies `max(0, t - elapsed)`), so times drawn after a `Resync` are upper
+  bounds.  A warning is emitted when a program contains one.
+
+## Verifying QCVT without an RFSoC
+
+QICK separates compilation from execution: `AveragerProgramV2` resolves all
+timing at construction, in pure software, given only a `QickConfig`. The board
+is required to *play* pulses, never to *decide when they play*.
+
+```bash
+pip install -e ".[dev]"
+pytest tests/ -v
+```
+
+`tests/test_power_rabi_timing.py` compiles a full Power_rabi program against the
+bundled `examples/qick_config.json` and asserts pulse-to-pulse offsets to within
+tProc cycle quantization. Any timing regression is catchable on a laptop.
 
 ## License
 

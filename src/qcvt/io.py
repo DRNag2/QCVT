@@ -127,6 +127,7 @@ def review_schedule(
     show: bool = False,
     confirm: bool = False,
     full_export: bool = False,
+    time_origin: str = "program",
 ) -> bool:
     """Pre-submission gate: visualize the schedule before sending it to the RFSoC.
 
@@ -151,6 +152,9 @@ def review_schedule(
     full_export : bool
         If ``True`` and ``save_dir`` is set, also write amplitude CSVs and edge
         matrices via :func:`visualize_all`.
+    time_origin : str
+        ``"program"`` (absolute timeline, default) or ``"body"`` (t = 0 at the
+        start of the loop body).  Affects plots only; exports stay absolute.
 
     Returns
     -------
@@ -174,6 +178,7 @@ def review_schedule(
             gen_ch_labels=gen_ch_labels,
             physical_port_labels=physical_port_labels,
             show=False,
+            time_origin=time_origin,
         )
         schedule_path = os.path.join(save_dir, "schedule.png")
         print(f"QCVT review saved: {schedule_path}")
@@ -187,6 +192,7 @@ def review_schedule(
                 title=title,
                 t0_us=t0_us,
                 max_time_us=max_time_us,
+                time_origin=time_origin,
             )
             plt.show()
     else:
@@ -199,6 +205,7 @@ def review_schedule(
             title=title,
             t0_us=t0_us,
             max_time_us=max_time_us,
+            time_origin=time_origin,
         )
         ax = result[0] if isinstance(result, tuple) else result
         if save_dir is not None:
@@ -235,14 +242,17 @@ def visualize_all(
     gen_ch_labels: Optional[dict] = None,
     physical_port_labels: Optional[dict] = None,
     schedule_dpi: int = 150,
-    table_dpi: int = 200,  # accepted for backwards compatibility
     show: bool = False,
     insets: Optional[bool] = None,
+    time_origin: str = "program",
 ) -> dict:
     """Generate every visualization artifact for ``prog`` in ``out_dir``.
 
     Returns a dict of output paths (values are ``None`` when a step is skipped,
     e.g. no generator pulses for the amplitude export).
+
+    ``time_origin="body"`` shifts the schedule *plot* so t = 0 is the start of
+    the loop body; the CSV/NPZ exports always stay on the absolute timeline.
     """
     import matplotlib.pyplot as plt
 
@@ -262,6 +272,7 @@ def visualize_all(
         t0_us=t0_us,
         max_time_us=t1_us,
         insets=insets,
+        time_origin=time_origin,
     )
     ax = result[0] if isinstance(result, tuple) else result
     ax.figure.savefig(schedule_path, dpi=schedule_dpi, bbox_inches="tight")

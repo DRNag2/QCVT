@@ -19,6 +19,7 @@ CW pumps) are handled by:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -41,6 +42,19 @@ def _as_schedule(prog_or_schedule) -> Schedule:
     if isinstance(prog_or_schedule, Schedule):
         return prog_or_schedule
     return extract_schedule(prog_or_schedule)
+
+
+def _shifted_schedule(sched: Schedule, offset_us: float) -> Schedule:
+    """Draw-time copy of ``sched`` with all event times shifted earlier by
+    ``offset_us``.  The original schedule is untouched, so exports made from it
+    stay on the absolute program timeline."""
+    events = [replace(e,
+                      t_start=e.t_start - offset_us,
+                      t_min=e.t_min - offset_us,
+                      t_max=e.t_max - offset_us)
+              for e in sched.events]
+    return Schedule(events=events, soccfg=sched.soccfg, prog=sched.prog,
+                    loop_dict=dict(sched.loop_dict), body_start_us=0.0)
 
 
 def _channel_colors(gen_chs):
@@ -122,6 +136,7 @@ def plot_pulse_schedule(
     label_pulses: bool = True,
     schedule: Optional[Schedule] = None,
     insets: Optional[bool] = None,
+    time_origin: str = "program",
 ):
     """Plot a pulse schedule from a compiled QICK ``asm_v2`` program.
 
@@ -156,6 +171,11 @@ def plot_pulse_schedule(
         If ``True``, always try to add a zoom inset around short pulses.
         If ``None`` (default), add an inset automatically when the schedule's
         pulse-length dynamic range is large.  If ``False``, never add an inset.
+    time_origin : str
+        ``"program"`` (default): absolute program timeline, including any
+        initial delay from ``_initialize()``.  ``"body"``: shift the time axis
+        so t = 0 is the start of the loop body, matching how times read inside
+        ``_body()``.  Draw-time only; exports keep the absolute timeline.
 
     Returns
     -------
@@ -164,8 +184,12 @@ def plot_pulse_schedule(
     """
     if amplitude_units not in ("dac", "norm"):
         raise ValueError("amplitude_units must be 'dac' or 'norm'")
+    if time_origin not in ("program", "body"):
+        raise ValueError("time_origin must be 'program' or 'body'")
 
     sched = schedule if schedule is not None else _as_schedule(prog)
+    if time_origin == "body" and sched and sched.body_start_us:
+        sched = _shifted_schedule(sched, sched.body_start_us)
     ax_amp = None
     want_amp = show_amplitude
 
@@ -220,6 +244,8 @@ def plot_pulse_schedule(
         gen_ch_labels, physical_port_labels, label_pulses,
         t0_us, end_us, window_us, gen_chs, adc_chs,
     )
+    if time_origin == "body":
+        ax.set_xlabel("Time (µs, relative to body start)")
     if title:
         ax.set_title(title, fontsize=11)
 
@@ -259,6 +285,8 @@ def plot_pulse_schedule(
     if draw_amp and ax_amp is not None:
         _draw_amplitude_panel(ax_amp, sched, colors, draw_lengths,
                               amplitude_units, t0_us, end_us, gen_ch_labels)
+        if time_origin == "body":
+            ax_amp.set_xlabel("Time (µs, relative to body start)")
 
     return (ax, ax_amp) if want_amp else ax
 
@@ -457,6 +485,7 @@ def show_schedule(
     t0_us: float = 0.0,
     max_time_us: Optional[float] = None,
     insets: Optional[bool] = None,
+    time_origin: str = "program",
 ) -> None:
     """Quickly display a pulse schedule interactively (no files saved).
 
@@ -473,5 +502,6 @@ def show_schedule(
         t0_us=t0_us,
         max_time_us=max_time_us,
         insets=insets,
+        time_origin=time_origin,
     )
     plt.show()

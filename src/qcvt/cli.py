@@ -28,6 +28,10 @@ def main() -> int:
     parser.add_argument("--t0", type=float, default=0.0, help="Export window start (µs)")
     parser.add_argument("--t1", type=float, default=None,
                         help="Export window end (µs); default: infer from schedule")
+    parser.add_argument("--time-origin", choices=("program", "body"), default="program",
+                        help="Time axis origin for the schedule plot: 'program' "
+                             "(absolute, default) or 'body' (t=0 at loop-body start). "
+                             "Exports always use the absolute timeline.")
     args = parser.parse_args()
 
     if not os.path.isfile(args.pickle):
@@ -54,6 +58,7 @@ def main() -> int:
         amplitude_units=args.amplitude_units,
         t0_us=args.t0,
         t1_us=args.t1,
+        time_origin=args.time_origin,
     )
     if args.no_table_png:
         for key in ("edges_state_png", "edges_amp_png"):
