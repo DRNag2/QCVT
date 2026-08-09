@@ -53,13 +53,21 @@ def _shifted_schedule(sched: Schedule, offset_us: float) -> Schedule:
                       t_min=e.t_min - offset_us,
                       t_max=e.t_max - offset_us)
               for e in sched.events]
-    return Schedule(events=events, soccfg=sched.soccfg, prog=sched.prog,
-                    loop_dict=dict(sched.loop_dict), body_start_us=0.0)
+    return Schedule(
+        events=events, soccfg=sched.soccfg, prog=sched.prog,
+        loop_dict=dict(sched.loop_dict), body_start_us=0.0,
+        suppress_off_pulses=sched.suppress_off_pulses,
+    )
+
+
+# tab10 index 2 is green and collides with ADC lane color ``_ADC_COLOR``.
+_GEN_CMAP_INDICES = (0, 1, 3, 4, 5, 6, 7, 8, 9)
 
 
 def _channel_colors(gen_chs):
     cmap = plt.cm.tab10
-    return {ch: cmap(i % 10) for i, ch in enumerate(gen_chs)}
+    n = len(_GEN_CMAP_INDICES)
+    return {ch: cmap(_GEN_CMAP_INDICES[i % n]) for i, ch in enumerate(gen_chs)}
 
 
 def _gen_label(sched: Schedule, ch: int, gen_ch_labels, physical_port_labels) -> str:
@@ -393,7 +401,6 @@ def _add_zoom_inset(
     """Overlay a zoom inset on the schedule axes around ``[z0, z1]``."""
     # Place the inset in the upper-left of the schedule panel.
     inset = ax.inset_axes([0.02, 0.55, 0.38, 0.42])
-    window_us = max(z1 - z0, 1e-6)
     # Re-draw bars into the inset without lane labels / legend clutter.
     for e in sched.gen_events:
         if id(e) in suppressed:

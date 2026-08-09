@@ -51,7 +51,11 @@ def load_soccfg_from_json(path: str):
 
 
 def load_program_pickle(pickle_path: str):
-    """Load a compiled program from a cloudpickle/pickle file."""
+    """Load a compiled program from a cloudpickle/pickle file.
+
+    Prefers ``cloudpickle`` when installed (``pip install qcvt[pickle]``);
+    falls back to the stdlib ``pickle`` module.
+    """
     try:
         import cloudpickle as pickle_mod
     except ImportError:
@@ -128,6 +132,8 @@ def review_schedule(
     full_export: bool = False,
     time_origin: str = "program",
     insets: Optional[bool] = None,
+    strict: bool = False,
+    suppress_off_pulses: bool = True,
 ) -> bool:
     """Pre-submission gate: visualize the schedule before sending it to the RFSoC.
 
@@ -170,6 +176,9 @@ def review_schedule(
     import matplotlib.pyplot as plt
 
     schedule_path = None
+    sched = extract_schedule(
+        prog, strict=strict, suppress_off_pulses=suppress_off_pulses,
+    )
     if save_dir is not None and full_export:
         os.makedirs(save_dir, exist_ok=True)
         visualize_all(
@@ -185,12 +194,15 @@ def review_schedule(
             show=False,
             time_origin=time_origin,
             insets=insets,
+            strict=strict,
+            suppress_off_pulses=suppress_off_pulses,
         )
         schedule_path = os.path.join(save_dir, "schedule.png")
         print(f"QCVT review saved: {schedule_path}")
         if show:
             plot_pulse_schedule(
                 prog,
+                schedule=sched,
                 show_amplitude=show_amplitude,
                 amplitude_units=amplitude_units,
                 gen_ch_labels=gen_ch_labels,
@@ -205,6 +217,7 @@ def review_schedule(
     else:
         result = plot_pulse_schedule(
             prog,
+            schedule=sched,
             show_amplitude=show_amplitude,
             amplitude_units=amplitude_units,
             gen_ch_labels=gen_ch_labels,
@@ -253,6 +266,9 @@ def visualize_all(
     show: bool = False,
     insets: Optional[bool] = None,
     time_origin: str = "program",
+    write_table_png: bool = True,
+    strict: bool = False,
+    suppress_off_pulses: bool = True,
 ) -> dict:
     """Generate every visualization artifact for ``prog`` in ``out_dir``.
 
@@ -260,11 +276,17 @@ def visualize_all(
 
     ``time_origin="body"`` shifts the schedule *plot* so t = 0 is the start of
     the loop body; the edge-matrix export always stays on the absolute timeline.
+
+    ``write_table_png=False`` writes the edge-matrix CSV only (skips the table
+    PNG).  ``strict`` and ``suppress_off_pulses`` are forwarded to
+    :func:`~qcvt.model.extract_schedule`.
     """
     import matplotlib.pyplot as plt
 
     os.makedirs(out_dir, exist_ok=True)
-    sched = extract_schedule(prog)
+    sched = extract_schedule(
+        prog, strict=strict, suppress_off_pulses=suppress_off_pulses,
+    )
     results: dict = {}
 
     schedule_path = os.path.join(out_dir, "schedule.png")
@@ -295,9 +317,12 @@ def visualize_all(
             rows=rows, schedule=sched,
         )
         results["edges_state_csv"] = state_csv
-        state_png = edges_prefix + "_state.png"
-        csv_to_table_png(state_csv, state_png, "State edge summary")
-        results["edges_state_png"] = state_png
+        if write_table_png:
+            state_png = edges_prefix + "_state.png"
+            csv_to_table_png(state_csv, state_png, "State edge summary")
+            results["edges_state_png"] = state_png
+        else:
+            results["edges_state_png"] = None
     except RuntimeError:
         results["edges_state_csv"] = None
         results["edges_state_png"] = None

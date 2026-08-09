@@ -210,11 +210,11 @@ def test_untimed_macros_do_not_warn(sched):
 def test_off_suppression_names():
     from qcvt.model import PulseEvent, Schedule
 
-    def sched_with(name):
+    def sched_with(name, suppress=True):
         cw = PulseEvent(ch=0, name="pump", kind="gen", t_start=0.0, length=1.0,
                         periodic=True)
         cand = PulseEvent(ch=0, name=name, kind="gen", t_start=0.0, length=1.0)
-        return Schedule(events=[cw, cand]), cand
+        return Schedule(events=[cw, cand], suppress_off_pulses=suppress), cand
 
     for name in ("pump_off", "turnoff", "turn_off", "off"):
         s, cand = sched_with(name)
@@ -222,6 +222,59 @@ def test_off_suppression_names():
     for name in ("offset_cal", "off_resonant_probe", "readout_offset"):
         s, cand = sched_with(name)
         assert id(cand) not in s.suppressed_events(), name
+
+    s, cand = sched_with("pump_off", suppress=False)
+    assert id(cand) not in s.suppressed_events()
+
+
+def test_strict_mode_raises_on_unhandled_timed_macro():
+    from qcvt.model import QCVTError, extract_schedule as es
+
+    class FutureTimedMacro:
+        t_params: dict = {}
+
+    class Prog:
+        macro_list = [FutureTimedMacro()]
+        pulses = {}
+        soccfg = None
+        loop_dict = {}
+
+    with pytest.raises(QCVTError, match="FutureTimedMacro"):
+        es(Prog(), strict=True)
+
+
+def test_strict_mode_raises_on_resync():
+    from qcvt.model import QCVTError
+
+    soccfg = QickConfig(CFG)
+
+    class WithResync(AveragerProgramV2):
+        def _initialize(self, cfg):
+            self.declare_gen(ch=6, nqz=1)
+            self.add_pulse(ch=6, name="a", style="const", freq=1000.0,
+                           phase=0, gain=0.5, length=1.0)
+
+        def _body(self, cfg):
+            self.pulse(ch=6, name="a", t=0)
+            self.resync(1.0)
+
+    with pytest.raises(QCVTError, match="Resync"):
+        extract_schedule(WithResync(soccfg, reps=1, final_delay=1.0, cfg={}),
+                         strict=True)
+
+
+def test_gen_colors_avoid_adc_green():
+    """Generator lane colors must not reuse the ADC green (tab10 index 2)."""
+    import matplotlib.pyplot as plt
+    from qcvt.plotting import _ADC_COLOR, _channel_colors
+
+    colors = _channel_colors(list(range(12)))
+    adc = plt.matplotlib.colors.to_rgb(_ADC_COLOR)
+    tab10_green = plt.cm.tab10(2)[:3]
+    for ch, rgba in colors.items():
+        assert rgba[:3] != pytest.approx(tab10_green, abs=1e-6), ch
+        dist = sum((a - b) ** 2 for a, b in zip(rgba[:3], adc)) ** 0.5
+        assert dist > 0.15, ch
 
 
 def test_body_time_origin(sched):

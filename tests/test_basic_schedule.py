@@ -31,11 +31,38 @@ def test_public_api():
     for name in [
         "plot_pulse_schedule", "show_schedule", "visualize_all",
         "visualize_from_pickle", "extract_schedule", "Schedule", "PulseEvent",
+        "QCVTError", "strict_mode", "is_strict",
         "export_edge_matrix_csv", "csv_to_table_png",
         "save_soccfg_to_json", "load_soccfg_from_json",
         "review_schedule",
     ]:
         assert hasattr(qcvt, name), name
+
+
+def test_csv_to_table_png_without_pandas(tmp_path, monkeypatch):
+    """Table PNG rendering must not need pandas, which is not a dependency.
+
+    pandas may still be installed in the test environment, so block the import
+    outright rather than trusting its absence.
+    """
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_pandas(name, *args, **kwargs):
+        if name == "pandas" or name.startswith("pandas."):
+            raise ImportError("pandas is not a QCVT dependency")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_pandas)
+
+    from qcvt.export import csv_to_table_png
+
+    csv_path = tmp_path / "edges_state.csv"
+    csv_path.write_text("timestamp (ns),0.00e0,1.00e3\ngen 0,on,off\n")
+    png_path = tmp_path / "edges_state.png"
+    csv_to_table_png(str(csv_path), str(png_path), title="state")
+    assert png_path.is_file() and png_path.stat().st_size > 0
 
 
 def test_extract_schedule_empty():

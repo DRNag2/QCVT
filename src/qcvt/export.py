@@ -143,15 +143,19 @@ def _unique_time_labels(values_ns) -> List[str]:
 def csv_to_table_png(csv_path: str, png_path: str, title: str = "") -> None:
     """Render a CSV (e.g. an edge matrix) as a PNG table.
 
-    Cells that are ``on`` are highlighted.
+    Cells that are ``on`` are highlighted.  Uses the stdlib ``csv`` module
+    (no pandas required).
     """
-    import pandas as pd
     import matplotlib.pyplot as plt
 
-    df = pd.read_csv(csv_path)
+    with open(csv_path, newline="") as f:
+        rows = list(_csv.reader(f))
+    if not rows:
+        raise ValueError(f"empty CSV: {csv_path}")
+    header, data = rows[0], rows[1:]
 
     def _display_col(col: str) -> str:
-        if col == df.columns[0]:
+        if col == header[0]:
             return col
         s = str(col).strip()
         if "(" in s and s.endswith(")"):
@@ -160,16 +164,19 @@ def csv_to_table_png(csv_path: str, png_path: str, title: str = "") -> None:
             try:
                 float(base)
                 return base + "(" + suf
-            except Exception:
+            except ValueError:
                 pass
         return s
 
-    display_cols = [_display_col(c) for c in df.columns]
-    fig_h = max(2.5, 0.55 * (len(df) + 1))
-    fig_w = max(8.0, 0.8 * len(df.columns))
+    display_cols = [_display_col(c) for c in header]
+    fig_h = max(2.5, 0.55 * (len(data) + 1))
+    fig_w = max(8.0, 0.8 * len(header))
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
     ax.axis("off")
-    tbl = ax.table(cellText=df.values, colLabels=display_cols, loc="center", cellLoc="center")
+    cell_text = data if data else [[""] * len(header)]
+    tbl = ax.table(
+        cellText=cell_text, colLabels=display_cols, loc="center", cellLoc="center",
+    )
     tbl.auto_set_font_size(False)
     tbl.set_fontsize(9)
     tbl.scale(1.0, 1.35)
@@ -186,8 +193,8 @@ def csv_to_table_png(csv_path: str, png_path: str, title: str = "") -> None:
         if r == 0 or c <= 0:
             continue
         try:
-            val = df.iat[r - 1, c]
-        except Exception:
+            val = data[r - 1][c]
+        except (IndexError, TypeError):
             continue
         on = isinstance(val, str) and val.strip().lower() == "on"
         if on:

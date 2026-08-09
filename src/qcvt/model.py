@@ -27,8 +27,10 @@ from __future__ import annotations
 
 import re
 import warnings
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 
@@ -38,7 +40,43 @@ _IGNORED_TIMED_MACROS = frozenset({"Wait", "ConfigReadout"})
 # Matches pulse names whose final token is "off"/"turnoff" (e.g. "pump_off",
 # "turn_off", "turnoff", "off") without matching "offset_cal" or
 # "off_resonant_probe", where "off" is not a trailing cleanup token.
+# Lab convention for CW cleanup pulses; disable via suppress_off_pulses=False.
 _OFF_PULSE_RE = re.compile(r"(^|[_\-\s])(turn[_\-\s]?)?off$")
+
+_STRICT: ContextVar[bool] = ContextVar("qcvt_strict", default=False)
+
+
+class QCVTError(RuntimeError):
+    """Raised in strict mode when schedule extraction cannot proceed safely."""
+
+
+def is_strict() -> bool:
+    """Return whether the current thread/context is in strict extraction mode."""
+    return _STRICT.get()
+
+
+@contextmanager
+def strict_mode(enabled: bool = True) -> Iterator[None]:
+    """Context manager that makes schedule extraction raise on ambiguities.
+
+    Default (non-strict) mode skips unparseable macros with a warning so a plot
+    can still be produced.  Strict mode is for verification gates where a
+    silently incomplete schedule is worse than an error.
+    """
+    token = _STRICT.set(bool(enabled))
+    try:
+        yield
+    finally:
+        _STRICT.reset(token)
+
+
+def _fail(message: str, cause: Optional[BaseException] = None) -> None:
+    """Raise :class:`QCVTError` in strict mode; otherwise emit a warning."""
+    if is_strict():
+        if cause is not None:
+            raise QCVTError(message) from cause
+        raise QCVTError(message)
+    warnings.warn(f"QCVT: {message}")
 
 
 # --------------------------------------------------------------------------- #
@@ -57,11 +95,13 @@ def param_nominal(x: Any) -> float:
         except Exception:
             try:
                 return float(x.minval())
-            except Exception:
+            except Exception as exc:
+                _fail(f"could not read QickParam nominal value from {x!r}", exc)
                 return float("nan")
     try:
         return float(x)
-    except Exception:
+    except Exception as exc:
+        _fail(f"could not coerce {x!r} to float", exc)
         return float("nan")
 
 
@@ -71,7 +111,8 @@ def param_range(x: Any) -> Tuple[float, float, bool]:
         swept = bool(getattr(x, "spans", None))
         try:
             lo, hi = float(x.minval()), float(x.maxval())
-        except Exception:
+        except Exception as exc:
+            _fail(f"could not read QickParam range from {x!r}", exc)
             v = param_nominal(x)
             lo = hi = v
         return lo, hi, swept
@@ -170,6 +211,9 @@ class Schedule:
     # Absolute time (us) at which the loop body starts (first OpenLoop); used
     # for time_origin="body" plotting.  Everything before it is _initialize().
     body_start_us: float = 0.0
+    # Hide non-periodic "*_off"/"turnoff" pulses that share a timestamp with a
+    # periodic pulse on the same channel (common CW cleanup convention).
+    suppress_off_pulses: bool = True
 
     @property
     def gen_events(self) -> List[PulseEvent]:
@@ -225,7 +269,11 @@ class Schedule:
         """Return ids of events to hide: a non-periodic "off"/"turnoff" pulse
         scheduled at the same time as a periodic pulse on the same channel
         (a common cleanup artifact that would otherwise clutter the plot).
+
+        Disabled when ``suppress_off_pulses`` is ``False``.
         """
+        if not self.suppress_off_pulses:
+            return set()
         skip = set()
         by_key: Dict[Tuple[int, float], List[PulseEvent]] = {}
         for e in self.gen_events:
@@ -250,8 +298,11 @@ def _macro_time_param(macro: Any, name: str):
     if callable(getter):
         try:
             return getter(name)
-        except Exception:
-            pass
+        except Exception as exc:
+            if is_strict():
+                raise QCVTError(
+                    f"get_time_param({name!r}) failed on {type(macro).__name__}"
+                ) from exc
     return getattr(macro, "t_params", {}).get(name)
 
 
@@ -268,11 +319,18 @@ def _pulse_param_range(prog: Any, name: str, param: str) -> Tuple[float, float, 
             if arr.size:
                 lo, hi = float(np.nanmin(arr)), float(np.nanmax(arr))
                 return float(arr.flat[0]), lo, hi, not np.isclose(lo, hi)
-        except Exception:
-            pass
+        except Exception as exc:
+            if is_strict():
+                raise QCVTError(
+                    f"get_pulse_param({name!r}, {param!r}) failed"
+                ) from exc
     try:
         p = getattr(prog, "pulses", {})[name].params.get(param)
-    except Exception:
+    except Exception as exc:
+        if is_strict():
+            raise QCVTError(
+                f"could not read pulse param {param!r} for {name!r}"
+            ) from exc
         p = None
     if p is None:
         return 0.0, 0.0, 0.0, False
@@ -287,23 +345,54 @@ def _ro_length_us(prog: Any, ro: int) -> Optional[float]:
         length = rc["length"]
         f_output = prog.soccfg["readouts"][ro]["f_output"]
         return float(length) / float(f_output)
-    except Exception:
+    except Exception as exc:
+        if is_strict():
+            raise QCVTError(
+                f"could not resolve readout length for channel {ro}"
+            ) from exc
         return None
 
 
 # --------------------------------------------------------------------------- #
 # Extraction
 # --------------------------------------------------------------------------- #
-def extract_schedule(prog: Any) -> Schedule:
+def extract_schedule(
+    prog: Any,
+    *,
+    strict: bool = False,
+    suppress_off_pulses: bool = True,
+) -> Schedule:
     """Build a :class:`Schedule` from a compiled QICK ``asm_v2`` program.
 
     The program must be compiled (``AveragerProgramV2`` compiles on construction).
-    Timing is recovered in microseconds and is sweep-aware; on any unexpected
-    structure the offending event is skipped rather than aborting the whole
-    schedule.
+    Timing is recovered in microseconds and is sweep-aware.
+
+    Parameters
+    ----------
+    prog :
+        Compiled ``AveragerProgramV2`` (or compatible) instance.
+    strict : bool
+        If ``False`` (default), a macro that fails to parse is skipped with a
+        warning.  If ``True``, extraction raises :class:`QCVTError` on parse
+        failures, unhandled timed macros, and ``Resync`` (whose drawn times are
+        only upper bounds).  Prefer ``strict=True`` for pre-submit verification.
+    suppress_off_pulses : bool
+        If ``True`` (default), hide non-periodic pulses whose name ends in
+        ``off`` / ``turnoff`` when they share a timestamp with a periodic pulse
+        on the same channel.  Set ``False`` if that naming heuristic does not
+        match your lab's convention.
     """
-    sched = Schedule(soccfg=getattr(prog, "soccfg", None), prog=prog,
-                     loop_dict=dict(getattr(prog, "loop_dict", {}) or {}))
+    with strict_mode(strict):
+        return _extract_schedule(prog, suppress_off_pulses=suppress_off_pulses)
+
+
+def _extract_schedule(prog: Any, *, suppress_off_pulses: bool) -> Schedule:
+    sched = Schedule(
+        soccfg=getattr(prog, "soccfg", None),
+        prog=prog,
+        loop_dict=dict(getattr(prog, "loop_dict", {}) or {}),
+        suppress_off_pulses=suppress_off_pulses,
+    )
 
     macro_list = getattr(prog, "macro_list", None) or []
     pulses = getattr(prog, "pulses", None) or {}
@@ -326,8 +415,8 @@ def extract_schedule(prog: Any) -> Schedule:
                 # so the drawn position is an upper bound.  QICK's own timestamp
                 # bookkeeping uses the full t, so we match it.
                 if cname == "Resync" and not resync_warned:
-                    warnings.warn(
-                        "QCVT: program contains Resync; times after it are "
+                    _fail(
+                        "program contains Resync; times after it are "
                         "upper bounds (Resync applies max(0, t - elapsed) at "
                         "runtime)."
                     )
@@ -420,13 +509,16 @@ def extract_schedule(prog: Any) -> Schedule:
                 # that's a real gap in the schedule.
                 if hasattr(macro, "t_params") and cname not in _IGNORED_TIMED_MACROS:
                     if cname not in unknown_warned:
-                        warnings.warn(
-                            f"QCVT: unhandled timed macro {cname!r}; schedule "
+                        _fail(
+                            f"unhandled timed macro {cname!r}; schedule "
                             f"may be incomplete or misaligned after this point."
                         )
                         unknown_warned.add(cname)
-        except Exception as exc:  # keep going; a single bad macro shouldn't kill the plot
-            warnings.warn(f"QCVT: skipping macro {cname}: {exc}")
+        except QCVTError:
+            raise
+        except Exception as exc:
+            # keep going in default mode; a single bad macro shouldn't kill the plot
+            _fail(f"skipping macro {cname}: {exc}", exc)
 
     return sched
 
@@ -437,7 +529,9 @@ def extract_schedule(prog: Any) -> Schedule:
 def _gencfg(prog: Any, ch: int) -> dict:
     try:
         return dict(prog.soccfg["gens"][ch])
-    except Exception:
+    except Exception as exc:
+        if is_strict():
+            raise QCVTError(f"could not read generator config for ch {ch}") from exc
         return {}
 
 
@@ -456,7 +550,11 @@ def _envelope_magnitude(prog: Any, ch: int, envelope: str) -> Optional[np.ndarra
     envelopes = getattr(prog, "envelopes", None)
     try:
         data = np.asarray(envelopes[ch]["envs"][envelope]["data"])
-    except Exception:
+    except Exception as exc:
+        if is_strict():
+            raise QCVTError(
+                f"could not read envelope {envelope!r} on ch {ch}"
+            ) from exc
         return None
     if data.size == 0:
         return None
@@ -470,7 +568,11 @@ def _flat_top_plateau_us(prog: Any, event: PulseEvent) -> float:
     try:
         length = getattr(prog, "pulses", {})[event.name].params.get("length")
         return max(0.0, param_nominal(length))
-    except Exception:
+    except Exception as exc:
+        if is_strict():
+            raise QCVTError(
+                f"could not resolve flat_top plateau for {event.name!r}"
+            ) from exc
         # Fall back: total length minus whatever we can attribute to the ramps.
         return max(0.0, event.length)
 

@@ -2,9 +2,12 @@
 
 from .model import (
     PulseEvent,
+    QCVTError,
     Schedule,
     amplitude_trace,
     extract_schedule,
+    is_strict,
+    strict_mode,
 )
 from .plotting import plot_pulse_schedule, show_schedule
 from .export import (
@@ -23,7 +26,10 @@ from .io import (
 __all__ = [
     "PulseEvent",
     "Schedule",
+    "QCVTError",
     "extract_schedule",
+    "strict_mode",
+    "is_strict",
     "amplitude_trace",
     "plot_pulse_schedule",
     "show_schedule",
@@ -37,4 +43,4 @@ __all__ = [
     "visualize_all",
 ]
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"

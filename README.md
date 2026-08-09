@@ -14,11 +14,19 @@ plays, even across generators and readouts running at different clock rates.
 
 ![Example schedule](examples/example_schedule.png)
 
+## Compatibility
+
+Verified against **qick 0.2.388, 0.2.406, and 0.2.422** (CI matrix). QCVT reaches
+into qick internals (`macro_list`, `t_params`, pulse/envelope dicts); if a newer
+qick release breaks extraction, pin to a verified version or open an issue.
+
 ## Install
 
 ```bash
-pip install -e .            # core: matplotlib, numpy, pandas, cloudpickle
-pip install -e ".[qick]"    # also install qick (needed to build programs / load soccfg)
+pip install -e .              # core: matplotlib, numpy
+pip install -e ".[qick]"      # also install qick (needed to build programs / load soccfg)
+pip install -e ".[pickle]"    # cloudpickle for loading compiled-program pickles
+pip install -e ".[dev]"       # pytest + qick + cloudpickle
 ```
 
 ## Quick start
@@ -26,7 +34,7 @@ pip install -e ".[qick]"    # also install qick (needed to build programs / load
 ### Live view while running experiments
 
 ```python
-from qcvt import show_schedule, review_schedule
+from qcvt import show_schedule, review_schedule, extract_schedule
 
 prog = YourProgram(soccfg, reps=1, final_delay=0, cfg=config)
 show_schedule(prog, title="My experiment")   # interactive; no files written
@@ -35,6 +43,9 @@ show_schedule(prog, title="My experiment")   # interactive; no files written
 ok = review_schedule(prog, save_dir="qcvt_reviews/my_exp", show=True, confirm=True)
 if not ok:
     raise RuntimeError("aborted")
+
+# Verification: raise instead of silently skipping ambiguous macros
+sched = extract_schedule(prog, strict=True)
 ```
 
 ### Everything at once
@@ -78,7 +89,9 @@ bundled `examples/qick_config.json`).
 qcvt --pickle prog.pkl --out-dir ./out --show-amplitude
 ```
 
-Writes `schedule.png` and `edges_state.csv/.png`.
+Writes `schedule.png` and `edges_state.csv/.png`. Use `--no-table-png` to skip the
+table image, `--strict` for fail-fast extraction, and `--no-suppress-off` to keep
+CW cleanup pulses whose names end in `off`.
 
 ## What the plot shows
 
@@ -115,7 +128,7 @@ Writes `schedule.png` and `edges_state.csv/.png`.
 | `visualize_all(prog, out_dir, ...)` | `dict` | Schedule PNG + state edge matrix + table PNG |
 | `plot_pulse_schedule(prog, ...)` | `ax` or `(ax, ax_amp)` | Draw the schedule (and optional amplitude panel) |
 | `visualize_from_pickle(path, ...)` | `(prog, ax)` | Load a compiled-program pickle and plot |
-| `extract_schedule(prog)` | `Schedule` | Sweep-aware, microsecond schedule model |
+| `extract_schedule(prog, strict=False, suppress_off_pulses=True)` | `Schedule` | Sweep-aware, microsecond schedule model |
 | `export_edge_matrix_csv(prog, prefix, t0, t1, ...)` | `str` | On/off state edge matrix CSV |
 | `csv_to_table_png(csv, png, title)` | `None` | Render a CSV as a highlighted table |
 | `save_soccfg_to_json(soc, path)` | `None` | Save RFSoC config for offline use |
@@ -129,14 +142,19 @@ The package is organized into `qcvt.model` (schedule extraction), `qcvt.plotting
 - The program must be compiled (an `AveragerProgramV2` compiles on construction).
 - A single iteration of each loop is drawn; swept values are annotated and their
   ranges shown rather than unrolled.
-- Extraction is best-effort: a macro that fails to parse is skipped with a
-  warning rather than aborting the whole schedule.  Unhandled **timed** macros
-  (anything with `t_params` that QCVT does not recognize) emit a warning, since
-  they may shift or omit events; untimed macros (register ops, loop control,
-  labels) are ignored by design.
+- Extraction is best-effort by default: a macro that fails to parse is skipped with a
+  warning rather than aborting the whole schedule.  Pass `strict=True` (or use
+  `with strict_mode():`) to raise `QCVTError` instead — preferred for pre-submit
+  verification.  Unhandled **timed** macros (anything with `t_params` that QCVT
+  does not recognize) warn or raise the same way; untimed macros (register ops,
+  loop control, labels) are ignored by design.
 - `resync()` advances the time reference by *at most* its argument (at runtime
   it applies `max(0, t - elapsed)`), so times drawn after a `Resync` are upper
-  bounds.  A warning is emitted when a program contains one.
+  bounds.  A warning is emitted (or `QCVTError` in strict mode) when a program
+  contains one.
+- By default, non-periodic pulses whose names end in `off` / `turnoff` are hidden
+  when they share a timestamp with a periodic pulse on the same channel (a common
+  CW cleanup convention).  Pass `suppress_off_pulses=False` to keep them.
 
 ## Verifying QCVT without an RFSoC
 
