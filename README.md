@@ -111,9 +111,9 @@ CW cleanup pulses whose names end in `off`.
   body — matching how times read inside your `_body()`.  This affects plots
   only; the state edge-matrix export always stays on the absolute timeline.
 - Correct amplitudes for all QICK pulse styles:
-  - ``const`` — rectangle
-  - ``arb`` — curved envelopes (gaussian, DRAG, arbitrary I/Q) sampled at the DAC rate
-  - ``flat_top`` — rising ramp + plateau + falling ramp (QICK's three-segment convention)
+  - ``const``: rectangle
+  - ``arb``: curved envelopes (gaussian, DRAG, arbitrary I/Q) sampled at the DAC rate
+  - ``flat_top``: rising ramp + plateau + falling ramp (QICK's three-segment convention)
 - **Multi-timescale** programs (ns qubit pulses next to µs readout / ms CW):
   - set ``t0_us`` / ``max_time_us`` to zoom the viewing window
   - short pulses that would be invisible get a tick + duration callout
