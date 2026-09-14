@@ -1,4 +1,4 @@
-# QCVT — QICK Control Visualization Tool
+# QCVT: QICK Control Visualization Tool
 
 Visualize and export the pulse schedule of a [QICK](https://github.com/openquantumhardware/qick)
 `asm_v2` program **before it is sent to an RFSoC**, so you can confirm timing,
