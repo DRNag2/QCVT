@@ -180,6 +180,45 @@ def test_timing_and_sweeps():
 
 
 @needs_qick
+def test_qick_accessors_match_dicts():
+    """Documented accessors used by QCVT must match the underlying dicts.
+
+    Skipped on older qick releases that lack the accessors; QCVT still works
+    there via dict fallbacks. Covered when running against a qick build that
+    includes get_gen_cfg / get_macro_list / etc.
+    """
+    prog = _build_spec_program()
+    soccfg = prog.soccfg
+    if not (hasattr(soccfg, "get_gen_cfg") and hasattr(prog, "get_macro_list")):
+        pytest.skip("qick build does not expose documented accessors")
+
+    gencfg = soccfg.get_gen_cfg(2)
+    assert gencfg["fs"] == soccfg["gens"][2]["fs"]
+    assert gencfg["f_fabric"] == soccfg["gens"][2]["f_fabric"]
+    assert gencfg["maxv"] == soccfg["gens"][2]["maxv"]
+    assert soccfg.get_gen_fs(2) == pytest.approx(float(soccfg["gens"][2]["fs"]))
+    assert soccfg.get_maxv(2) == int(
+        __import__("numpy").floor(
+            soccfg["gens"][2]["maxv"] * soccfg["gens"][2]["maxv_scale"]
+        )
+    )
+
+    rocfg = soccfg.get_ro_cfg(0)
+    assert rocfg["f_output"] == soccfg["readouts"][0]["f_output"]
+    assert soccfg.get_ro_f_output(0) == pytest.approx(float(soccfg["readouts"][0]["f_output"]))
+
+    assert list(prog.get_macro_list()) == list(prog.macro_list)
+    assert prog.get_pulses() is prog.pulses
+    assert dict(prog.get_loop_dict()) == dict(prog.loop_dict)
+    assert prog.get_ro_chs() is prog.ro_chs
+    assert prog.get_ro_length_us(0) == pytest.approx(10.0, abs=1e-2)
+    assert "qpulse" in prog.get_pulses()
+    assert "gain" in prog.get_pulses()["qpulse"].get_params()
+    env = prog.get_envelopes()
+    assert env is prog.envelopes
+
+
+@needs_qick
 def test_plot_with_ax_and_amplitude_no_crash():
     import matplotlib.pyplot as plt
     from qcvt import plot_pulse_schedule
@@ -256,7 +295,8 @@ def test_flat_top_amplitude_has_ramps_and_plateau():
     assert t is not None and amp is not None
     # Should have rising samples, a high plateau, then falling samples.
     peak = float(amp.max())
-    assert peak == pytest.approx(0.5 * 32766, rel=0.05)
+    # flat_top is envelope-driven: plotted at half of |gain| * maxv.
+    assert peak == pytest.approx(0.25 * 32766, rel=0.05)
     # Plateau: many consecutive samples near the peak.
     on_plateau = amp > 0.95 * peak
     assert on_plateau.sum() >= 2
@@ -265,6 +305,43 @@ def test_flat_top_amplitude_has_ramps_and_plateau():
     assert mid.sum() >= 4
     # Total span matches get_length.
     assert (t[-1] - t[0]) == pytest.approx(e.length, abs=0.05)
+
+
+@needs_qick
+def test_arb_const_continuity_amplitude():
+    """Arb gain=1 (I-only envelope) and const gain=1/2 plot at the same peak.
+
+    Matches QICK's DDS vs product analog-amplitude relationship.
+    """
+    from qick.asm_v2 import AveragerProgramV2
+    from qcvt import extract_schedule, load_soccfg_from_json
+    from qcvt.model import amplitude_trace
+
+    soccfg = load_soccfg_from_json(CONFIG)
+
+    class ArbConstProg(AveragerProgramV2):
+        def _initialize(self, cfg):
+            self.declare_gen(ch=2, nqz=2)
+            self.add_gauss(ch=2, name="g", sigma=0.05, length=0.3)
+            self.add_pulse(ch=2, name="arb", style="arb", envelope="g",
+                           freq=3000, phase=0, gain=1.0)
+            self.add_pulse(ch=2, name="cw", style="const", length=1.0,
+                           freq=3000, phase=0, gain=0.5)
+
+        def _body(self, cfg):
+            self.pulse(ch=2, name="arb", t=0)
+            self.pulse(ch=2, name="cw", t=1.0)
+
+    prog = ArbConstProg(soccfg, reps=1, final_delay=1, cfg={}, reps_innermost=False)
+    sched = extract_schedule(prog)
+    arb = next(e for e in sched.gen_events if e.name == "arb")
+    cw = next(e for e in sched.gen_events if e.name == "cw")
+    _, arb_amp = amplitude_trace(prog, arb, dac_units=True)
+    _, cw_amp = amplitude_trace(prog, cw, dac_units=True)
+    expected = 0.5 * 32766
+    assert float(arb_amp.max()) == pytest.approx(expected, rel=0.05)
+    assert float(cw_amp.max()) == pytest.approx(expected, rel=0.05)
+    assert float(arb_amp.max()) == pytest.approx(float(cw_amp.max()), rel=0.05)
 
 
 @needs_qick
